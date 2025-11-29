@@ -48,13 +48,14 @@ class EditingBarView: UIView {
 
     private func setupButtons() {
         let theme = ColorTheme.current(for: traitCollection)
-        let buttonConfig = UIImage.SymbolConfiguration(pointSize: deviceLayout.editingButtonSize, weight: .light, scale: .default)
+        let buttonConfig = UIImage.SymbolConfiguration(pointSize: deviceLayout.editingButtonWidth, weight: .light, scale: .default)
 
         dismissButton = UIButton(type: .system)
         dismissButton.setTitle("", for: .normal)
         dismissButton.tintColor = theme.decorationColor
         let chevronImage = UIImage(systemName: "chevron.down", withConfiguration: buttonConfig)
         dismissButton.setImage(chevronImage, for: .normal)
+        dismissButton.imageView?.contentMode = .scaleAspectFit
         dismissButton.addTarget(self, action: #selector(handleDismissButton), for: .touchUpInside)
         addSubview(dismissButton)
 
@@ -62,6 +63,7 @@ class EditingBarView: UIView {
         cutButton.tintColor = theme.decorationColor
         let cutImage = UIImage(systemName: "scissors", withConfiguration: buttonConfig)
         cutButton.setImage(cutImage, for: .normal)
+        cutButton.imageView?.contentMode = .scaleAspectFit
         cutButton.addTarget(self, action: #selector(handleCutButton), for: .touchUpInside)
         addSubview(cutButton)
 
@@ -69,6 +71,7 @@ class EditingBarView: UIView {
         copyButton.tintColor = theme.decorationColor
         let copyImage = UIImage(systemName: "doc.on.doc", withConfiguration: buttonConfig)
         copyButton.setImage(copyImage, for: .normal)
+        copyButton.imageView?.contentMode = .scaleAspectFit
         copyButton.addTarget(self, action: #selector(handleCopyButton), for: .touchUpInside)
         addSubview(copyButton)
 
@@ -76,38 +79,46 @@ class EditingBarView: UIView {
         pasteButton.tintColor = theme.decorationColor
         let pasteImage = UIImage(systemName: "doc.on.clipboard", withConfiguration: buttonConfig)
         pasteButton.setImage(pasteImage, for: .normal)
+        pasteButton.imageView?.contentMode = .scaleAspectFit
         pasteButton.addTarget(self, action: #selector(handlePasteButton), for: .touchUpInside)
         addSubview(pasteButton)
     }
 
     func updateLayout(for shiftState: ShiftState, containerWidth: CGFloat) {
         let rightOffset = calculateDismissButtonOffset(for: shiftState, containerWidth: containerWidth)
-        let buttonY = (frame.height - deviceLayout.editingButtonSize) / 2
-
-        // Position dismiss button
-        let dismissX = containerWidth - rightOffset - deviceLayout.editingButtonSize
-        dismissButton.frame = CGRect(x: dismissX, y: buttonY, width: deviceLayout.editingButtonSize, height: deviceLayout.editingButtonSize)
-
-        // Position editing buttons
+        let buttonHeight = frame.height
         let buttonSpacing = deviceLayout.editingButtonSpacing
-        let buttonSize = deviceLayout.editingButtonSize
+        let buttonWidth = deviceLayout.editingButtonWidth
+        let halfSpacing = buttonSpacing / 2
 
-        // Paste button (leftmost of the three)
-        let pasteX = containerWidth - (rightOffset + buttonSize + buttonSpacing + buttonSize)
-        pasteButton.frame = CGRect(x: pasteX, y: buttonY, width: buttonSize, height: buttonSize)
+        // Calculate original icon center positions (before expanding hitboxes)
+        let dismissCenterX = containerWidth - rightOffset - buttonWidth / 2
+        let pasteCenterX = containerWidth - (rightOffset + buttonWidth + buttonSpacing + buttonWidth / 2)
+        let copyCenterX = pasteCenterX - buttonSpacing - buttonWidth
+        let cutCenterX = copyCenterX - buttonSpacing - buttonWidth
 
-        // Copy button (middle)
-        let copyX = pasteX - buttonSpacing - buttonSize
-        copyButton.frame = CGRect(x: copyX, y: buttonY, width: buttonSize, height: buttonSize)
+        // Dismiss button - extend left by halfSpacing, extend right to container edge
+        let dismissRightExtra = containerWidth - (dismissCenterX + buttonWidth / 2)
+        dismissButton.frame = CGRect(x: dismissCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + halfSpacing + dismissRightExtra, height: buttonHeight)
+        dismissButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: dismissRightExtra)
 
-        // Cut button (leftmost)
-        let cutX = copyX - buttonSpacing - buttonSize
-        cutButton.frame = CGRect(x: cutX, y: buttonY, width: buttonSize, height: buttonSize)
+        // Paste button - extend both sides by halfSpacing
+        pasteButton.frame = CGRect(x: pasteCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
+        pasteButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: halfSpacing)
+
+        // Copy button - extend both sides by halfSpacing
+        copyButton.frame = CGRect(x: copyCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
+        copyButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: halfSpacing)
+
+        // Cut button - extend right by halfSpacing, extend left to fill suggestionGap
+        let cutLeftExtra = deviceLayout.suggestionGap
+        cutButton.frame = CGRect(x: cutCenterX - buttonWidth / 2 - cutLeftExtra, y: 0, width: buttonWidth + halfSpacing + cutLeftExtra, height: buttonHeight)
+        cutButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: cutLeftExtra, bottom: 0, right: halfSpacing)
     }
 
     func calculateSuggestionArea(for shiftState: ShiftState, containerWidth: CGFloat) -> (x: CGFloat, width: CGFloat) {
         let dismissRightOffset = calculateDismissButtonOffset(for: shiftState, containerWidth: containerWidth)
-        let editingButtonsWidth = deviceLayout.editingButtonSize * 4 + deviceLayout.editingButtonSpacing * 3
+        let editingButtonsWidth = deviceLayout.editingButtonWidth * 4 + deviceLayout.editingButtonSpacing * 3
 
         // Align with the left edge of the first column of keys
         let isShifted: Bool
@@ -159,7 +170,7 @@ class EditingBarView: UIView {
 
         // Center the dismiss button above the rightmost key
         let rightmostKeyCenterX = rightmostKeyX + rightmostKeyWidth / 2
-        return containerWidth - rightmostKeyCenterX - deviceLayout.editingButtonSize / 2
+        return containerWidth - rightmostKeyCenterX - deviceLayout.editingButtonWidth / 2
     }
 
     @objc private func handleDismissButton() {

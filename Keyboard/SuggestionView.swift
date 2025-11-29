@@ -62,6 +62,7 @@ class SuggestionView: UIView {
 
         var config = UIButton.Configuration.plain()
         config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: leftPadding, bottom: 0, trailing: rightPadding)
+        config.background.cornerRadius = 0
 
         let button = UIButton(configuration: config)
         button.setAttributedTitle(attributedTitle, for: .normal)
@@ -99,8 +100,8 @@ class SuggestionView: UIView {
 
         var buttons: [UIButton] = []
         var currentX: CGFloat = 0
-        let buttonHeight = deviceLayout.topPadding - deviceLayout.verticalGap
-        let buttonY = (bounds.height - buttonHeight) / 2
+        let buttonHeight = bounds.height
+        let buttonY: CGFloat = 0
 
         let theme = ColorTheme.current(for: traitCollection)
 

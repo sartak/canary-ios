@@ -17,7 +17,7 @@ struct DeviceLayout {
     let bottomPadding: CGFloat
     let suggestionGap: CGFloat
     let cornerRadius: CGFloat
-    let editingButtonSize: CGFloat
+    let editingButtonWidth: CGFloat
     let editingButtonSpacing: CGFloat
     let regularFontSize: CGFloat
     let specialFontSize: CGFloat
@@ -82,7 +82,7 @@ struct DeviceLayout {
             bottomPadding: baseBottomPadding * heightScale,
             suggestionGap: baseSuggestionGap * widthScale,
             cornerRadius: baseCornerRadius * cornerRadiusScale,
-            editingButtonSize: baseEditingButtonSize * specialFontScale,
+            editingButtonWidth: baseEditingButtonSize * specialFontScale,
             editingButtonSpacing: baseEditingButtonSpacing * gapScale,
             regularFontSize: baseRegularFontSize * regularFontScale,
             specialFontSize: baseSpecialFontSize * specialFontScale,
