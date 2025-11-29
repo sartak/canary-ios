@@ -7,6 +7,12 @@
 
 import UIKit
 
+private let debugColors: [UIColor] = [.red, .green, .blue, .yellow, .orange, .purple, .cyan, .magenta]
+
+func debugColor(at index: Int) -> UIColor {
+    debugColors[index % debugColors.count].withAlphaComponent(0.4)
+}
+
 protocol EditingBarViewDelegate: AnyObject {
     func editingBarDismiss()
     func editingBarCut()
@@ -174,5 +180,9 @@ class EditingBarView: UIView {
 
     func setDebugVisualizationEnabled(_ enabled: Bool) {
         backgroundColor = enabled ? UIColor.cyan.withAlphaComponent(0.4) : UIColor.clear
+        let buttons = [dismissButton!, cutButton!, copyButton!, pasteButton!]
+        for (index, button) in buttons.enumerated() {
+            button.backgroundColor = enabled ? debugColor(at: index) : UIColor.clear
+        }
     }
 }

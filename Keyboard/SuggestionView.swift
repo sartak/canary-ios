@@ -9,6 +9,7 @@ class SuggestionView: UIView {
 
     private var autocorrectWord: String?
     private var autocorrectWordDisabled = false
+    private var debugVisualizationEnabled = false
 
     private var scrollView: UIScrollView!
 
@@ -106,6 +107,9 @@ class SuggestionView: UIView {
         // Create autocorrect button first if available
         if let correction = autocorrectWord {
             let button = createButton(title: correction, textColor: theme.autocorrectColor, target: #selector(autocorrectButtonTapped), leftPadding: 0, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight, strikethrough: autocorrectWordDisabled)
+            if debugVisualizationEnabled {
+                button.backgroundColor = debugColor(at: buttons.count)
+            }
             scrollView.addSubview(button)
             currentX += button.frame.width
             buttons.append(button)
@@ -117,6 +121,9 @@ class SuggestionView: UIView {
             let leftPadding = buttons.isEmpty ? 0 : deviceLayout.suggestionGap
             let button = createButton(title: label, textColor: theme.typeaheadTextColor, target: #selector(typeaheadButtonTapped), leftPadding: leftPadding, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight)
             button.tag = index
+            if debugVisualizationEnabled {
+                button.backgroundColor = debugColor(at: buttons.count)
+            }
             scrollView.addSubview(button)
             currentX += button.frame.width
             buttons.append(button)
@@ -150,6 +157,8 @@ class SuggestionView: UIView {
     }
 
     func setDebugVisualizationEnabled(_ enabled: Bool) {
+        debugVisualizationEnabled = enabled
         backgroundColor = enabled ? UIColor.yellow.withAlphaComponent(0.4) : UIColor.clear
+        layoutSuggestions()
     }
 }
