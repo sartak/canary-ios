@@ -26,7 +26,7 @@ class EditingBarView: UIView {
     private var copyButton: UIButton!
     private var pasteButton: UIButton!
 
-    private let deviceLayout: DeviceLayout
+    var deviceLayout: DeviceLayout
     private let keyboardLayout: KeyboardLayout
     private let currentLayer: Layer
     private let needsGlobe: Bool

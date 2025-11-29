@@ -1,7 +1,7 @@
 import UIKit
 
 class SuggestionView: UIView {
-    private var deviceLayout: DeviceLayout
+    var deviceLayout: DeviceLayout
 
     private var typeaheads: [(String, [InputAction])] = []
     private var onTypeaheadTapped: (([InputAction]) -> Void)?

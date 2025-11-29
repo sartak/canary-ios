@@ -36,6 +36,8 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
 
     var showHitboxDebug: Bool = false
     var characterFrequencies: CharacterDistribution?
+    var onNeedsKeyData: (() -> Void)?
+    private var lastLayoutWidth: CGFloat = 0
 
     // Multi-touch gesture recognizer
     private(set) var gestureRecognizer: MultiTouchKeyboardGestureRecognizer!
@@ -55,6 +57,14 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupTouchHandling()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.width > 0 && bounds.width != lastLayoutWidth {
+            lastLayoutWidth = bounds.width
+            onNeedsKeyData?()
+        }
     }
 
     private func setupTouchHandling() {

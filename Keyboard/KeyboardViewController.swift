@@ -146,6 +146,34 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.keyboardTouchView.dismissAlternatesPopup()
         }
 
+        keyboardTouchView.onNeedsKeyData = { [weak self] in
+            guard let self = self else { return }
+            let containerWidth = self.keyboardTouchView.bounds.width
+
+            // Recreate deviceLayout with correct bounds
+            let screenBounds = UIScreen.main.bounds
+            let isLandscape = screenBounds.width > screenBounds.height
+            let effectiveHeight = isLandscape ? screenBounds.width : screenBounds.height
+            self.deviceLayout = DeviceLayout.forCurrentDevice(containerWidth: containerWidth, containerHeight: effectiveHeight)
+            self.keyboardTouchView.deviceLayout = self.deviceLayout
+
+            self.keyboardTouchView.keyData = self.createKeyData()
+            self.keyboardTouchView.setNeedsDisplay()
+
+            // Update editing bar and suggestion view if they exist
+            if let editingBarView = self.editingBarView {
+                editingBarView.deviceLayout = self.deviceLayout
+                editingBarView.frame = CGRect(x: 0, y: 0, width: containerWidth, height: self.deviceLayout.topPadding - self.deviceLayout.verticalGap / 2)
+                editingBarView.updateLayout(for: self.effectiveShiftState(), containerWidth: containerWidth)
+
+                if let suggestionView = self.suggestionView {
+                    suggestionView.deviceLayout = self.deviceLayout
+                    let suggestionArea = editingBarView.calculateSuggestionArea(for: self.effectiveShiftState(), containerWidth: containerWidth)
+                    suggestionView.frame = CGRect(x: suggestionArea.x, y: 0, width: suggestionArea.width, height: self.deviceLayout.topPadding - self.deviceLayout.verticalGap / 2)
+                }
+            }
+        }
+
         // Calculate keyboard height first
         let isShifted: Bool
         switch effectiveShiftState() {
@@ -311,7 +339,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func createRowKeyData(for row: [Node], rowIndex: Int, yOffset: CGFloat, startingIndex: Int, allRows: [[Node]]) -> [KeyData] {
-        let containerWidth = view.bounds.width
+        let containerWidth = keyboardTouchView?.bounds.width ?? view.bounds.width
         let rowWidth = Node.calculateRowWidth(for: row)
         let rowStartX = (containerWidth - rowWidth) / 2
         var xOffset: CGFloat = rowStartX
@@ -321,7 +349,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             switch node {
             case .key(let key, let keyWidth):
                 let frame = CGRect(x: xOffset, y: yOffset, width: keyWidth, height: deviceLayout.keyHeight)
-                _ = view.bounds.width > largeScreenWidth
+                _ = containerWidth > largeScreenWidth
 
                 let debugColor: UIColor
                 if rowIndex % 2 == 0 {
