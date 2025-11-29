@@ -98,7 +98,8 @@ class SuggestionService {
     }
 
     private func updateAutocorrect(prefix: String, suffix: String, autocorrectEnabled: Bool = true, shiftState: ShiftState) -> String? {
-        if prefix.isEmpty || !autocorrectEnabled {
+        // Don't autocorrect when editing in the middle of text
+        if prefix.isEmpty || !suffix.isEmpty || !autocorrectEnabled {
             return nil
         }
 
