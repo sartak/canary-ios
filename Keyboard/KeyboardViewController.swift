@@ -31,6 +31,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     var undoActions: [InputAction]?
     private var debugVisualizationEnabled = false
     private var characterFrequencies: CharacterDistribution?
+    private var charBeforeCursor: Character?
+    private var backspaceShiftState: ShiftState = .unshifted
 
     // Expose autocorrect state for testing/debugging
     var isAutocorrectEnabled: Bool {
@@ -478,7 +480,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func effectiveShiftState() -> ShiftState {
-        return userShiftOverride ? userShiftState : max(appShiftState, userShiftState)
+        if userShiftOverride { return userShiftState }
+        return max(appShiftState, userShiftState, backspaceShiftState)
     }
 
     func toggleShift() {
@@ -517,6 +520,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     func willHandleKeyTap() {
+        charBeforeCursor = textDocumentProxy.documentContextBeforeInput?.last
+        backspaceShiftState = .unshifted
     }
 
     func handleBackspace() {
@@ -524,7 +529,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             executeActions(undoActions)
             clearUndo()
         } else {
+            backspaceShiftState = charBeforeCursor?.isUppercase == true ? .shifted : .unshifted
+            charBeforeCursor = nil
             textDocumentProxy.deleteBackward()
+            updateKeyboardForShiftChange()
         }
     }
 
@@ -748,6 +756,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     override func textDidChange(_ textInput: UITextInput?) {
         super.textDidChange(textInput)
+        backspaceShiftState = .unshifted
         updateAutocorrectSettings()
         handleTextChange()
     }
