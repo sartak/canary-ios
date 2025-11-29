@@ -46,34 +46,33 @@ class SuggestionView: UIView {
     }
 
     private func createButton(title: String, textColor: UIColor, target: Selector, leftPadding: CGFloat, rightPadding: CGFloat, x: CGFloat, y: CGFloat, height: CGFloat, strikethrough: Bool = false) -> UIButton {
-        var config = UIButton.Configuration.plain()
+        let font = UIFont.systemFont(ofSize: deviceLayout.suggestionFontSize)
 
-        config.title = title
-        config.baseForegroundColor = textColor
-        config.titleAlignment = .leading
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+        ]
+        if strikethrough {
+            attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            attrs[.strikethroughColor] = textColor
+            attrs[.baselineOffset] = 0
+        }
+        let attributedTitle = NSAttributedString(string: title, attributes: attrs)
+
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: leftPadding, bottom: 0, trailing: rightPadding)
 
         let button = UIButton(configuration: config)
+        button.setAttributedTitle(attributedTitle, for: .normal)
+        button.contentHorizontalAlignment = .leading
         button.addTarget(self, action: target, for: .touchUpInside)
 
         // Calculate button width based on text content plus padding
-        let font = UIFont.systemFont(ofSize: deviceLayout.suggestionFontSize)
         let textSize = (title as NSString).size(withAttributes: [.font: font])
 
         // Add small buffer to prevent text truncation in UIButton
         let textBuffer: CGFloat = 4.0
         let width = textSize.width + leftPadding + rightPadding + textBuffer
-
-        // Update button configuration with padding and font
-        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: leftPadding, bottom: 0, trailing: rightPadding)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var outgoing = incoming
-            outgoing.font = font
-            if strikethrough {
-                outgoing.strikethroughStyle = .single
-            }
-            return outgoing
-        }
-        button.configuration = config
 
         button.frame = CGRect(x: x, y: y, width: width, height: height)
         return button
