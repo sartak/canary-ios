@@ -519,6 +519,15 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     func willHandleKeyTap() {
     }
 
+    func handleBackspace() {
+        if let undoActions = undoActions {
+            executeActions(undoActions)
+            clearUndo()
+        } else {
+            textDocumentProxy.deleteBackward()
+        }
+    }
+
     private func autoShift() {
         let beforeInput = textDocumentProxy.documentContextBeforeInput ?? ""
 

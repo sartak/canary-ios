@@ -19,6 +19,7 @@ protocol KeyActionDelegate: AnyObject {
     func toggleShift()
     func autoUnshift()
     func willHandleKeyTap()
+    func handleBackspace()
     func advanceToNextInputMode()
     func handleConfiguration(_ config: Configuration)
     func toggleAutocorrectWord()
@@ -182,12 +183,7 @@ class Key {
                 }
             }
         case .backspace:
-            if let undoActions = delegate.undoActions {
-                delegate.executeActions(undoActions)
-                delegate.clearUndo()
-            } else {
-                delegate.textDocumentProxy.deleteBackward()
-            }
+            delegate.handleBackspace()
         case .shift:
             delegate.toggleShift()
         case .enter:
