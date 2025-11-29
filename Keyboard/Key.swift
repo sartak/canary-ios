@@ -18,6 +18,7 @@ protocol KeyActionDelegate: AnyObject {
     func switchToLayout(_ layout: KeyboardLayout)
     func toggleShift()
     func autoUnshift()
+    func willHandleKeyTap()
     func advanceToNextInputMode()
     func handleConfiguration(_ config: Configuration)
     func toggleAutocorrectWord()
@@ -145,6 +146,8 @@ class Key {
 
     func didTap() {
         guard let delegate = delegate else { return }
+
+        delegate.willHandleKeyTap()
 
         // Clear undo state before handling any key (except when backspace uses undo)
         if case .backspace = keyType, delegate.undoActions != nil {

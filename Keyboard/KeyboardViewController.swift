@@ -516,6 +516,9 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         userShiftOverride = false
     }
 
+    func willHandleKeyTap() {
+    }
+
     private func autoShift() {
         let beforeInput = textDocumentProxy.documentContextBeforeInput ?? ""
 
