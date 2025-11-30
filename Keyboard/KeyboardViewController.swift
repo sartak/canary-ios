@@ -22,6 +22,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private var keyPopouts: [Int: UIView] = [:]
     private var editingBarView: EditingBarView!
     private var suggestionView: SuggestionView!
+    private var cachedSuggestions: (typeaheads: [(String, [InputAction])], autocorrect: String?)?
     var suggestionService: SuggestionService = SuggestionService()!
     private var pendingRefresh = false
     var maybePunctuating = false
@@ -652,6 +653,11 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         let suggestionArea = editingBarView.calculateSuggestionArea(for: effectiveShiftState(), containerWidth: containerWidth)
 
         suggestionView.frame = CGRect(x: suggestionArea.x, y: suggestionY, width: suggestionArea.width, height: suggestionHeight)
+
+        // Populate with cached suggestions immediately (avoids flicker on layer switch)
+        if let cached = cachedSuggestions {
+            suggestionView.setSuggestions(typeaheads: cached.typeaheads, autocorrect: cached.autocorrect)
+        }
     }
 
     private func resetMaybePunctuating() {
@@ -890,6 +896,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     // MARK: - SuggestionServiceDelegate
 
     func suggestionService(_ service: SuggestionService, didUpdateSuggestions typeahead: [(String, [InputAction])], autocorrect: String?, frequencies: CharacterDistribution) {
+        cachedSuggestions = (typeahead, autocorrect)
         characterFrequencies = frequencies
         keyboardTouchView?.characterFrequencies = characterFrequencies
         updateKeyHitboxes()

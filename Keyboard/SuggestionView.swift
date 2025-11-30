@@ -152,7 +152,11 @@ class SuggestionView: UIView {
     }
 
     func suggestionService(_ service: SuggestionService, didUpdateSuggestions typeahead: [(String, [InputAction])], autocorrect: String?, frequencies: CharacterDistribution) {
-        self.typeaheads = typeahead
+        setSuggestions(typeaheads: typeahead, autocorrect: autocorrect)
+    }
+
+    func setSuggestions(typeaheads: [(String, [InputAction])], autocorrect: String?) {
+        self.typeaheads = typeaheads
         self.autocorrectWord = autocorrect
         layoutSuggestions()
     }
