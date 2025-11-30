@@ -213,6 +213,11 @@ class EditingBarView: UIView {
         flash(button: button, color: .systemRed)
     }
 
+    func flashSuccess(for button: EditingButton) {
+        let color: UIColor = traitCollection.userInterfaceStyle == .dark ? .white : .systemGreen
+        flash(button: button, color: color)
+    }
+
     private func flash(button: EditingButton, color: UIColor) {
         let icon: UIImageView
         switch button {

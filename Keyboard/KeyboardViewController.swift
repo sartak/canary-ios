@@ -922,6 +922,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             UIPasteboard.general.string = selectedText
             textDocumentProxy.deleteBackward()
             handleTextChange()
+            editingBarView.flashSuccess(for: .cut)
         }
     }
 
@@ -932,6 +933,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
         if let selectedText = textDocumentProxy.selectedText, !selectedText.isEmpty {
             UIPasteboard.general.string = selectedText
+            editingBarView.flashSuccess(for: .copy)
         }
     }
 
@@ -943,6 +945,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         if let pasteText = UIPasteboard.general.string {
             textDocumentProxy.insertText(pasteText)
             handleTextChange()
+            editingBarView.flashSuccess(for: .paste)
         }
     }
 }
