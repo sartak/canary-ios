@@ -21,10 +21,14 @@ protocol EditingBarViewDelegate: AnyObject {
 }
 
 class EditingBarView: UIView {
-    private var dismissButton: UIButton!
-    private var cutButton: UIButton!
-    private var copyButton: UIButton!
-    private var pasteButton: UIButton!
+    private var dismissIcon: UIImageView!
+    private var cutIcon: UIImageView!
+    private var copyIcon: UIImageView!
+    private var pasteIcon: UIImageView!
+    private var dismissTapArea: UIView!
+    private var cutTapArea: UIView!
+    private var copyTapArea: UIView!
+    private var pasteTapArea: UIView!
 
     var deviceLayout: DeviceLayout
     private let keyboardLayout: KeyboardLayout
@@ -48,40 +52,49 @@ class EditingBarView: UIView {
 
     private func setupButtons() {
         let theme = ColorTheme.current(for: traitCollection)
-        let buttonConfig = UIImage.SymbolConfiguration(pointSize: deviceLayout.editingButtonWidth, weight: .light, scale: .default)
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: deviceLayout.editingButtonWidth, weight: .light, scale: .default)
 
-        dismissButton = UIButton(type: .system)
-        dismissButton.setTitle("", for: .normal)
-        dismissButton.tintColor = theme.decorationColor
-        let chevronImage = UIImage(systemName: "chevron.down", withConfiguration: buttonConfig)
-        dismissButton.setImage(chevronImage, for: .normal)
-        dismissButton.imageView?.contentMode = .scaleAspectFit
-        dismissButton.addTarget(self, action: #selector(handleDismissButton), for: .touchUpInside)
-        addSubview(dismissButton)
+        (dismissIcon, dismissTapArea) = makeIconWithTapArea(
+            systemName: "chevron.down",
+            symbolConfig: symbolConfig,
+            tintColor: theme.decorationColor,
+            action: #selector(handleDismissButton)
+        )
 
-        cutButton = UIButton(type: .system)
-        cutButton.tintColor = theme.decorationColor
-        let cutImage = UIImage(systemName: "scissors", withConfiguration: buttonConfig)
-        cutButton.setImage(cutImage, for: .normal)
-        cutButton.imageView?.contentMode = .scaleAspectFit
-        cutButton.addTarget(self, action: #selector(handleCutButton), for: .touchUpInside)
-        addSubview(cutButton)
+        (cutIcon, cutTapArea) = makeIconWithTapArea(
+            systemName: "scissors",
+            symbolConfig: symbolConfig,
+            tintColor: theme.decorationColor,
+            action: #selector(handleCutButton)
+        )
 
-        copyButton = UIButton(type: .system)
-        copyButton.tintColor = theme.decorationColor
-        let copyImage = UIImage(systemName: "doc.on.doc", withConfiguration: buttonConfig)
-        copyButton.setImage(copyImage, for: .normal)
-        copyButton.imageView?.contentMode = .scaleAspectFit
-        copyButton.addTarget(self, action: #selector(handleCopyButton), for: .touchUpInside)
-        addSubview(copyButton)
+        (copyIcon, copyTapArea) = makeIconWithTapArea(
+            systemName: "doc.on.doc",
+            symbolConfig: symbolConfig,
+            tintColor: theme.decorationColor,
+            action: #selector(handleCopyButton)
+        )
 
-        pasteButton = UIButton(type: .system)
-        pasteButton.tintColor = theme.decorationColor
-        let pasteImage = UIImage(systemName: "doc.on.clipboard", withConfiguration: buttonConfig)
-        pasteButton.setImage(pasteImage, for: .normal)
-        pasteButton.imageView?.contentMode = .scaleAspectFit
-        pasteButton.addTarget(self, action: #selector(handlePasteButton), for: .touchUpInside)
-        addSubview(pasteButton)
+        (pasteIcon, pasteTapArea) = makeIconWithTapArea(
+            systemName: "doc.on.clipboard",
+            symbolConfig: symbolConfig,
+            tintColor: theme.decorationColor,
+            action: #selector(handlePasteButton)
+        )
+    }
+
+    private func makeIconWithTapArea(systemName: String, symbolConfig: UIImage.SymbolConfiguration, tintColor: UIColor, action: Selector) -> (UIImageView, UIView) {
+        let image = UIImage(systemName: systemName, withConfiguration: symbolConfig)
+        let imageView = UIImageView(image: image)
+        imageView.tintColor = tintColor
+        imageView.contentMode = .scaleAspectFit
+        addSubview(imageView)
+
+        let tapArea = UIView()
+        tapArea.addGestureRecognizer(UITapGestureRecognizer(target: self, action: action))
+        addSubview(tapArea)
+
+        return (imageView, tapArea)
     }
 
     func updateLayout(for shiftState: ShiftState, containerWidth: CGFloat) {
@@ -91,29 +104,31 @@ class EditingBarView: UIView {
         let buttonWidth = deviceLayout.editingButtonWidth
         let halfSpacing = buttonSpacing / 2
 
-        // Calculate original icon center positions (before expanding hitboxes)
+        // Calculate icon center positions
         let dismissCenterX = containerWidth - rightOffset - buttonWidth / 2
         let pasteCenterX = containerWidth - (rightOffset + buttonWidth + buttonSpacing + buttonWidth / 2)
         let copyCenterX = pasteCenterX - buttonSpacing - buttonWidth
         let cutCenterX = copyCenterX - buttonSpacing - buttonWidth
 
-        // Dismiss button - extend left by halfSpacing, extend right to container edge
+        // Position icons at their visual centers
+        dismissIcon.frame = CGRect(x: dismissCenterX - buttonWidth / 2, y: 0, width: buttonWidth, height: buttonHeight)
+        pasteIcon.frame = CGRect(x: pasteCenterX - buttonWidth / 2, y: 0, width: buttonWidth, height: buttonHeight)
+        copyIcon.frame = CGRect(x: copyCenterX - buttonWidth / 2, y: 0, width: buttonWidth, height: buttonHeight)
+        cutIcon.frame = CGRect(x: cutCenterX - buttonWidth / 2, y: 0, width: buttonWidth, height: buttonHeight)
+
+        // Dismiss tap area - extend left by halfSpacing, extend right to container edge
         let dismissRightExtra = containerWidth - (dismissCenterX + buttonWidth / 2)
-        dismissButton.frame = CGRect(x: dismissCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + halfSpacing + dismissRightExtra, height: buttonHeight)
-        dismissButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: dismissRightExtra)
+        dismissTapArea.frame = CGRect(x: dismissCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + halfSpacing + dismissRightExtra, height: buttonHeight)
 
-        // Paste button - extend both sides by halfSpacing
-        pasteButton.frame = CGRect(x: pasteCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
-        pasteButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: halfSpacing)
+        // Paste tap area - extend both sides by halfSpacing
+        pasteTapArea.frame = CGRect(x: pasteCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
 
-        // Copy button - extend both sides by halfSpacing
-        copyButton.frame = CGRect(x: copyCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
-        copyButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: halfSpacing, bottom: 0, right: halfSpacing)
+        // Copy tap area - extend both sides by halfSpacing
+        copyTapArea.frame = CGRect(x: copyCenterX - buttonWidth / 2 - halfSpacing, y: 0, width: buttonWidth + buttonSpacing, height: buttonHeight)
 
-        // Cut button - extend right by halfSpacing, extend left to fill suggestionGap
+        // Cut tap area - extend right by halfSpacing, extend left to fill suggestionGap
         let cutLeftExtra = deviceLayout.suggestionGap
-        cutButton.frame = CGRect(x: cutCenterX - buttonWidth / 2 - cutLeftExtra, y: 0, width: buttonWidth + halfSpacing + cutLeftExtra, height: buttonHeight)
-        cutButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: cutLeftExtra, bottom: 0, right: halfSpacing)
+        cutTapArea.frame = CGRect(x: cutCenterX - buttonWidth / 2 - cutLeftExtra, y: 0, width: buttonWidth + halfSpacing + cutLeftExtra, height: buttonHeight)
     }
 
     func calculateSuggestionArea(for shiftState: ShiftState, containerWidth: CGFloat) -> (x: CGFloat, width: CGFloat) {
@@ -191,9 +206,9 @@ class EditingBarView: UIView {
 
     func setDebugVisualizationEnabled(_ enabled: Bool) {
         backgroundColor = enabled ? UIColor.cyan.withAlphaComponent(0.4) : UIColor.clear
-        let buttons = [dismissButton!, cutButton!, copyButton!, pasteButton!]
-        for (index, button) in buttons.enumerated() {
-            button.backgroundColor = enabled ? debugColor(at: index) : UIColor.clear
+        let tapAreas = [dismissTapArea!, cutTapArea!, copyTapArea!, pasteTapArea!]
+        for (index, tapArea) in tapAreas.enumerated() {
+            tapArea.backgroundColor = enabled ? debugColor(at: index) : UIColor.clear
         }
     }
 }

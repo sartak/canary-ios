@@ -46,6 +46,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private let keyRepeatInitialDelay: TimeInterval = 0.5
     private let keyRepeatInterval: TimeInterval = 0.05
 
+    private var screen: UIScreen {
+        view.window!.windowScene!.screen
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
 
@@ -58,7 +62,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         super.viewDidLayoutSubviews()
 
         let currentBounds = view.bounds
-        let screenBounds = UIScreen.main.bounds
+        let screenBounds = screen.bounds
 
         // Always setup keyboard initially
         if keyboardTouchView == nil {
@@ -91,7 +95,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func setupKeyboard() {
-        let screenBounds = UIScreen.main.bounds
+        let screenBounds = screen.bounds
         let viewBounds = view.bounds
         let isLandscape = screenBounds.width > screenBounds.height
 
@@ -152,7 +156,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             let containerWidth = self.keyboardTouchView.bounds.width
 
             // Recreate deviceLayout with correct bounds
-            let screenBounds = UIScreen.main.bounds
+            let screenBounds = self.screen.bounds
             let isLandscape = screenBounds.width > screenBounds.height
             let effectiveHeight = isLandscape ? screenBounds.width : screenBounds.height
             self.deviceLayout = DeviceLayout.forCurrentDevice(containerWidth: containerWidth, containerHeight: effectiveHeight)
