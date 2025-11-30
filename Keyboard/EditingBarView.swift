@@ -20,11 +20,16 @@ protocol EditingBarViewDelegate: AnyObject {
     func editingBarPaste()
 }
 
+enum EditingButton {
+    case cut, copy, paste
+}
+
 class EditingBarView: UIView {
     private var dismissIcon: UIImageView!
     private var cutIcon: UIImageView!
     private var copyIcon: UIImageView!
     private var pasteIcon: UIImageView!
+    private var flashResetWorkItems: [EditingButton: DispatchWorkItem] = [:]
     private var dismissTapArea: UIView!
     private var cutTapArea: UIView!
     private var copyTapArea: UIView!
@@ -202,6 +207,30 @@ class EditingBarView: UIView {
 
     @objc private func handlePasteButton() {
         delegate?.editingBarPaste()
+    }
+
+    func flashError(for button: EditingButton) {
+        flash(button: button, color: .systemRed)
+    }
+
+    private func flash(button: EditingButton, color: UIColor) {
+        let icon: UIImageView
+        switch button {
+        case .cut: icon = cutIcon
+        case .copy: icon = copyIcon
+        case .paste: icon = pasteIcon
+        }
+
+        flashResetWorkItems[button]?.cancel()
+        icon.tintColor = color
+
+        let workItem = DispatchWorkItem { [weak self, weak icon] in
+            guard let self, let icon else { return }
+            let theme = ColorTheme.current(for: self.traitCollection)
+            icon.tintColor = theme.decorationColor
+        }
+        flashResetWorkItems[button] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
     }
 
     func setDebugVisualizationEnabled(_ enabled: Bool) {

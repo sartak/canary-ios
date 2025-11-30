@@ -914,6 +914,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     func editingBarCut() {
+        guard hasFullAccess else {
+            editingBarView.flashError(for: .cut)
+            return
+        }
         if let selectedText = textDocumentProxy.selectedText, !selectedText.isEmpty {
             UIPasteboard.general.string = selectedText
             textDocumentProxy.deleteBackward()
@@ -922,12 +926,20 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     func editingBarCopy() {
+        guard hasFullAccess else {
+            editingBarView.flashError(for: .copy)
+            return
+        }
         if let selectedText = textDocumentProxy.selectedText, !selectedText.isEmpty {
             UIPasteboard.general.string = selectedText
         }
     }
 
     func editingBarPaste() {
+        guard hasFullAccess else {
+            editingBarView.flashError(for: .paste)
+            return
+        }
         if let pasteText = UIPasteboard.general.string {
             textDocumentProxy.insertText(pasteText)
             handleTextChange()
