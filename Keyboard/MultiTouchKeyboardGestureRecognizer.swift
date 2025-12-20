@@ -22,6 +22,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesDismiss: (() -> Void)?
     var onSwipeStarted: ((KeyData) -> Void)?
     var onSwipePathUpdated: (() -> Void)?
+    var onSwipeEnded: (([SwipeKey]) -> Void)?
 
     // Multi-touch support - same as original implementation
     private var touchQueue: [(UITouch, KeyData)] = []
@@ -139,9 +140,10 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 cancelLongPressTimer(for: touch)
                 let wasSwiping = swipingTouches.contains(touch)
                 if wasSwiping {
-                    // Swipe ended - log path and keys touched, move to fading
+                    // Swipe ended - extract key sequence and invoke callback
                     if let path = touchPaths[touch] {
-                        logSwipePath(path)
+                        let keySequence = extractKeySequence(from: path)
+                        onSwipeEnded?(keySequence)
                         fadingPaths.append(path)
                     }
                     // Remove from queue without triggering tap
@@ -306,23 +308,24 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         swipeAnimationTimer = nil
     }
 
-    private func logSwipePath(_ path: [(point: CGPoint, time: Date)]) {
-        // Log path points
-        let pointsStr = path.map { String(format: "(%.1f, %.1f)", $0.point.x, $0.point.y) }.joined(separator: ", ")
-        print("Swipe path (\(path.count) points): \(pointsStr)")
-
-        // Find keys touched along the path (deduplicated, preserving order)
-        var keysTouched: [String] = []
+    private func extractKeySequence(from path: [(point: CGPoint, time: Date)]) -> [SwipeKey] {
+        var characters: [Character] = []
         var lastKeyIndex: Int? = nil
         for entry in path {
             if let key = hitTestDelegate?.gestureRecognizer(self, keyAt: entry.point),
                key.index != lastKeyIndex {
-                if case .simple(let char) = key.key.keyType {
-                    keysTouched.append(char)
+                if case .simple(let char) = key.key.keyType,
+                   let firstChar = char.lowercased().first {
+                    characters.append(firstChar)
                 }
                 lastKeyIndex = key.index
             }
         }
-        print("Keys touched: \(keysTouched.joined(separator: " -> "))")
+        guard characters.count >= 2 else {
+            return characters.map { .required($0) }
+        }
+        return characters.enumerated().map { index, char in
+            (index == 0 || index == characters.count - 1) ? .required(char) : .optional(char)
+        }
     }
 }

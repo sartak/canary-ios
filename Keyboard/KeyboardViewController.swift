@@ -160,6 +160,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.keyboardTouchView.setNeedsDisplay()
         }
 
+        keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence in
+            self?.handleSwipeEnded(keySequence)
+        }
+
         keyboardTouchView.onNeedsKeyData = { [weak self] in
             guard let self = self else { return }
             let containerWidth = self.keyboardTouchView.bounds.width
@@ -608,6 +612,19 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
 
         updateKeyboardForShiftChange()
+    }
+
+    private func handleSwipeEnded(_ keySequence: [SwipeKey]) {
+        guard let result = suggestionService.decodeSwipe(
+            keySequence: keySequence,
+            shiftState: effectiveShiftState()
+        ) else {
+            return
+        }
+
+        executeActions(result.actions)
+        autoShift()
+        refreshSuggestions()
     }
 
     func switchToLayer(_ layer: Layer) {

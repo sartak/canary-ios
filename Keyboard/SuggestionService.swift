@@ -21,6 +21,7 @@ class SuggestionService {
 
     private var typeaheadService: TypeaheadService
     private var frequencyService: FrequencyService
+    private var swipeService: SwipeService
 
     private var autocorrectService: AutocorrectService
     private let db: OpaquePointer
@@ -48,7 +49,8 @@ class SuggestionService {
 
         let autocorrectService = AutocorrectService(db: db)
         guard let typeaheadService = TypeaheadService(db: db),
-              let frequencyService = FrequencyService(db: db) else {
+              let frequencyService = FrequencyService(db: db),
+              let swipeService = SwipeService(db: db) else {
             sqlite3_close(db)
             return nil
         }
@@ -56,10 +58,30 @@ class SuggestionService {
         self.autocorrectService = autocorrectService
         self.typeaheadService = typeaheadService
         self.frequencyService = frequencyService
+        self.swipeService = swipeService
     }
 
     deinit {
         sqlite3_close(db)
+    }
+
+    func decodeSwipe(keySequence: [SwipeKey], shiftState: ShiftState) -> (word: String, actions: [InputAction])? {
+        let pattern = keySequence.map(\.display).joined()
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let word = swipeService.decode(keySequence: keySequence)
+        let endTime = CFAbsoluteTimeGetCurrent()
+        let duration = (endTime - startTime) * 1000
+
+        guard let word = word else {
+            print("SwipeService: '\(pattern)' -> no match in \(String(format: "%.3f", duration))ms")
+            return nil
+        }
+
+        print("SwipeService: '\(pattern)' -> '\(word)' in \(String(format: "%.3f", duration))ms")
+        let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+        let actions: [InputAction] = [.insert(capitalizedWord + " "), .maybePunctuating(true)]
+        return (capitalizedWord, actions)
     }
 
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
