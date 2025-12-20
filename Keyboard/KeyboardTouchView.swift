@@ -35,6 +35,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     var onAlternateSelected: ((String, KeyData) -> Void)?
 
     var showHitboxDebug: Bool = false
+    var showDebugSwipePath: Bool = false
     var characterFrequencies: CharacterDistribution?
     var onNeedsKeyData: (() -> Void)?
     private var lastLayoutWidth: CGFloat = 0
@@ -299,9 +300,9 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     continue
                 }
 
-                let isRequiredSwipeKey = key.key.simpleCharacter.map { char in
+                let isRequiredSwipeKey = showDebugSwipePath && (key.key.simpleCharacter.map { char in
                     gestureRecognizer.swipeKeySequence.contains { $0.isRequired && $0.character == Character(char.lowercased()) }
-                } ?? false
+                } ?? false)
                 let hitboxColor = isRequiredSwipeKey ? UIColor.systemYellow.withAlphaComponent(0.5) : key.debugColor
 
                 let debugContext = UIGraphicsGetCurrentContext()
@@ -311,7 +312,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
         }
 
         // Draw swipe paths
-        if showHitboxDebug {
+        if showDebugSwipePath {
             // Debug mode: draw persistent 3px black bezier
             if debugSwipePath.count >= 2 {
                 let bezier = UIBezierPath()

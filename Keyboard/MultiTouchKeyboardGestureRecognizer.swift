@@ -38,6 +38,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private(set) var swipeKeySequence: [SwipeKey] = []
     private var swipeKeyPositions: [CGPoint] = []
     var deviceLayout: DeviceLayout?
+    var swipeEnabled: Bool = true
 
     func setSwipeKeySequence(_ sequence: [SwipeKey]) {
         swipeKeySequence = sequence
@@ -128,7 +129,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             touchPaths[touch, default: []].append((point: location, time: Date()))
 
             // Check for swipe transition
-            if let threshold = deviceLayout?.swipeDistanceThreshold,
+            if swipeEnabled,
+               let threshold = deviceLayout?.swipeDistanceThreshold,
                !swipingTouches.contains(touch) && !longPressTriggered.contains(touch) {
                 if pathDisplacementSquared(for: touch) >= threshold * threshold {
                     swipingTouches.insert(touch)

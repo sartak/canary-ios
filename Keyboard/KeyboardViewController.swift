@@ -111,8 +111,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.shiftState = effectiveShiftState()
         keyboardTouchView.deviceLayout = deviceLayout
         keyboardTouchView.gestureRecognizer.deviceLayout = deviceLayout
+        keyboardTouchView.gestureRecognizer.swipeEnabled = (currentLayer == .alpha)
         keyboardTouchView.autocorrectEnabled = !autocorrectUserDisabled
         keyboardTouchView.showHitboxDebug = debugVisualizationEnabled
+        keyboardTouchView.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
         if debugVisualizationEnabled {
             keyboardTouchView.setDebugSwipePath(lastSwipePath)
             keyboardTouchView.gestureRecognizer.setSwipeKeySequence(lastSwipeKeySequence)
@@ -923,6 +925,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         case .toggleDebugVisualization:
             debugVisualizationEnabled.toggle()
             keyboardTouchView?.showHitboxDebug = debugVisualizationEnabled
+            keyboardTouchView?.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
             editingBarView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
             suggestionView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
             if debugVisualizationEnabled {
