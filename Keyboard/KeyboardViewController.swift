@@ -157,7 +157,14 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
 
         keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] in
-            self?.keyboardTouchView.setNeedsDisplay()
+            guard let self = self else { return }
+            if self.keyboardTouchView.showHitboxDebug {
+                let pathPoints = self.keyboardTouchView.gestureRecognizer.currentSwipePathPoints
+                if !pathPoints.isEmpty {
+                    self.keyboardTouchView.setDebugSwipePath(pathPoints)
+                }
+            }
+            self.keyboardTouchView.setNeedsDisplay()
         }
 
         keyboardTouchView.gestureRecognizer.onSwipeKeySequenceChanged = { [weak self] keySequence in
@@ -171,8 +178,12 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self.updateKeyHitboxes()
         }
 
-        keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence in
-            self?.handleSwipeEnded(keySequence)
+        keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence, pathPoints in
+            guard let self = self else { return }
+            if self.keyboardTouchView.showHitboxDebug {
+                self.keyboardTouchView.setDebugSwipePath(pathPoints)
+            }
+            self.handleSwipeEnded(keySequence)
         }
 
         keyboardTouchView.onNeedsKeyData = { [weak self] in
@@ -418,6 +429,9 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
 
     private func handleKeyTouchDown(_ keyData: KeyData) {
+        if keyboardTouchView.showHitboxDebug {
+            keyboardTouchView.clearDebugSwipePath()
+        }
         keyboardTouchView.setNeedsDisplay()
 
         // Provide haptic feedback for key press

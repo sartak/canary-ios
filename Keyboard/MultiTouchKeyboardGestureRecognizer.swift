@@ -23,7 +23,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onSwipeStarted: ((KeyData) -> Void)?
     var onSwipePathUpdated: (() -> Void)?
     var onSwipeKeySequenceChanged: (([SwipeKey]) -> Void)?
-    var onSwipeEnded: (([SwipeKey]) -> Void)?
+    var onSwipeEnded: (([SwipeKey], [CGPoint]) -> Void)?
 
     // Multi-touch support - same as original implementation
     private var touchQueue: [(UITouch, KeyData)] = []
@@ -35,7 +35,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private var fadingPaths: [[(point: CGPoint, time: Date)]] = []
     private var swipeAnimationTimer: Timer?
     private let tailDuration: TimeInterval = 0.5
-    private var swipeKeySequence: [SwipeKey] = []
+    private(set) var swipeKeySequence: [SwipeKey] = []
     var deviceLayout: DeviceLayout?
 
     // Long press support
@@ -55,6 +55,14 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         return swipingTouches.compactMap { touchPaths[$0] } + fadingPaths
     }
 
+    var currentSwipePathPoints: [CGPoint] {
+        guard let touch = swipingTouches.first,
+              let path = touchPaths[touch] else {
+            return []
+        }
+        return path.map(\.point)
+    }
+
     override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)
         setupGestureRecognizer()
@@ -69,6 +77,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
+
+        swipeKeySequence.removeAll()
 
         for touch in touches {
             // Ignore new touches while alternates are active
@@ -146,8 +156,9 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 let wasSwiping = swipingTouches.contains(touch)
                 if wasSwiping {
                     // Swipe ended - finalize sequence and invoke callback
-                    let finalSequence = finalizeSwipeKeySequence()
-                    onSwipeEnded?(finalSequence)
+                    swipeKeySequence = finalizeSwipeKeySequence()
+                    let pathPoints = touchPaths[touch]?.map(\.point) ?? []
+                    onSwipeEnded?(swipeKeySequence, pathPoints)
                     if let path = touchPaths[touch] {
                         fadingPaths.append(path)
                     }
@@ -158,7 +169,6 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                     }
                     touchPaths.removeValue(forKey: touch)
                     swipingTouches.remove(touch)
-                    swipeKeySequence.removeAll()
                 } else {
                     processQueueUpToTouch(touch)
                     clearSwipeState(for: touch)

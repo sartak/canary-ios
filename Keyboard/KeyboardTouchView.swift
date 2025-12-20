@@ -38,6 +38,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     var characterFrequencies: CharacterDistribution?
     var onNeedsKeyData: (() -> Void)?
     private var lastLayoutWidth: CGFloat = 0
+    private var debugSwipePath: [CGPoint] = []
 
     // Multi-touch gesture recognizer
     private(set) var gestureRecognizer: MultiTouchKeyboardGestureRecognizer!
@@ -170,6 +171,16 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
         return alternatesPopup != nil
     }
 
+    func setDebugSwipePath(_ path: [CGPoint]) {
+        debugSwipePath = path
+        setNeedsDisplay()
+    }
+
+    func clearDebugSwipePath() {
+        debugSwipePath.removeAll()
+        setNeedsDisplay()
+    }
+
     private func key(at location: CGPoint) -> KeyData? {
         // This method is using a heuristic; non-letter keys typically won't be
         // affected by this decision
@@ -288,81 +299,101 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     continue
                 }
 
+                let isRequiredSwipeKey = key.key.simpleCharacter.map { char in
+                    gestureRecognizer.swipeKeySequence.contains { $0.isRequired && $0.character == Character(char.lowercased()) }
+                } ?? false
+                let hitboxColor = isRequiredSwipeKey ? UIColor.systemYellow.withAlphaComponent(0.5) : key.debugColor
+
                 let debugContext = UIGraphicsGetCurrentContext()
-                debugContext?.setFillColor(key.debugColor.cgColor)
+                debugContext?.setFillColor(hitboxColor.cgColor)
                 debugContext?.fill(key.hitbox)
             }
         }
 
-        // Draw swipe paths with tapered width (tail fades over ~500ms)
-        let now = Date()
-        let tailDuration: TimeInterval = 0.5
+        // Draw swipe paths
+        if showHitboxDebug {
+            // Debug mode: draw persistent 3px black bezier
+            if debugSwipePath.count >= 2 {
+                let bezier = UIBezierPath()
+                bezier.move(to: debugSwipePath[0])
+                for point in debugSwipePath.dropFirst() {
+                    bezier.addLine(to: point)
+                }
+                bezier.lineWidth = 3
+                UIColor.black.setStroke()
+                bezier.stroke()
+            }
+        } else {
+            // Normal mode: draw tapered width path (tail fades over ~500ms)
+            let now = Date()
+            let tailDuration: TimeInterval = 0.5
 
-        for path in gestureRecognizer.activeSwipePaths {
-            // Filter to points within tail duration
-            let visiblePath = path.filter { now.timeIntervalSince($0.time) <= tailDuration }
-            guard visiblePath.count >= 2 else { continue }
+            for path in gestureRecognizer.activeSwipePaths {
+                // Filter to points within tail duration
+                let visiblePath = path.filter { now.timeIntervalSince($0.time) <= tailDuration }
+                guard visiblePath.count >= 2 else { continue }
 
-            let maxWidth = deviceLayout.swipePathMaxWidth
+                let maxWidth = deviceLayout.swipePathMaxWidth
 
-            // Build polygon outline
-            var leftEdge: [CGPoint] = []
-            var rightEdge: [CGPoint] = []
+                // Build polygon outline
+                var leftEdge: [CGPoint] = []
+                var rightEdge: [CGPoint] = []
 
-            for i in 0..<visiblePath.count {
-                let age = now.timeIntervalSince(visiblePath[i].time)
-                let linearProgress = CGFloat(1.0 - age / tailDuration)
-                let progress = linearProgress * linearProgress  // Quadratic falloff
-                let halfWidth = maxWidth * progress / 2.0
+                for i in 0..<visiblePath.count {
+                    let age = now.timeIntervalSince(visiblePath[i].time)
+                    let linearProgress = CGFloat(1.0 - age / tailDuration)
+                    let progress = linearProgress * linearProgress  // Quadratic falloff
+                    let halfWidth = maxWidth * progress / 2.0
 
-                // Calculate direction
-                let direction: CGPoint
-                if i == 0 {
-                    direction = CGPoint(x: visiblePath[1].point.x - visiblePath[0].point.x,
-                                        y: visiblePath[1].point.y - visiblePath[0].point.y)
-                } else if i == visiblePath.count - 1 {
-                    direction = CGPoint(x: visiblePath[i].point.x - visiblePath[i-1].point.x,
-                                        y: visiblePath[i].point.y - visiblePath[i-1].point.y)
-                } else {
-                    direction = CGPoint(x: visiblePath[i+1].point.x - visiblePath[i-1].point.x,
-                                        y: visiblePath[i+1].point.y - visiblePath[i-1].point.y)
+                    // Calculate direction
+                    let direction: CGPoint
+                    if i == 0 {
+                        direction = CGPoint(x: visiblePath[1].point.x - visiblePath[0].point.x,
+                                            y: visiblePath[1].point.y - visiblePath[0].point.y)
+                    } else if i == visiblePath.count - 1 {
+                        direction = CGPoint(x: visiblePath[i].point.x - visiblePath[i-1].point.x,
+                                            y: visiblePath[i].point.y - visiblePath[i-1].point.y)
+                    } else {
+                        direction = CGPoint(x: visiblePath[i+1].point.x - visiblePath[i-1].point.x,
+                                            y: visiblePath[i+1].point.y - visiblePath[i-1].point.y)
+                    }
+
+                    // Normalize and get perpendicular
+                    let length = sqrt(direction.x * direction.x + direction.y * direction.y)
+                    guard length > 0 else { continue }
+                    let perpendicular = CGPoint(x: -direction.y / length, y: direction.x / length)
+
+                    let point = visiblePath[i].point
+                    leftEdge.append(CGPoint(x: point.x + perpendicular.x * halfWidth,
+                                            y: point.y + perpendicular.y * halfWidth))
+                    rightEdge.append(CGPoint(x: point.x - perpendicular.x * halfWidth,
+                                             y: point.y - perpendicular.y * halfWidth))
                 }
 
-                // Normalize and get perpendicular
-                let length = sqrt(direction.x * direction.x + direction.y * direction.y)
-                guard length > 0 else { continue }
-                let perpendicular = CGPoint(x: -direction.y / length, y: direction.x / length)
+                // Draw filled polygon with rounded head
+                let polygon = UIBezierPath()
+                guard let first = leftEdge.first else { continue }
+                polygon.move(to: first)
+                for point in leftEdge.dropFirst() {
+                    polygon.addLine(to: point)
+                }
+                // Add semicircle at the head
+                if let lastPoint = visiblePath.last?.point, let lastLeft = leftEdge.last, let lastRight = rightEdge.last {
+                    let lastAge = now.timeIntervalSince(visiblePath.last!.time)
+                    let lastProgress = CGFloat(1.0 - lastAge / tailDuration)
+                    let radius = maxWidth * lastProgress * lastProgress / 2.0
+                    let direction = CGPoint(x: lastLeft.x - lastPoint.x, y: lastLeft.y - lastPoint.y)
+                    let startAngle = atan2(direction.y, direction.x)
+                    polygon.addArc(withCenter: lastPoint, radius: radius, startAngle: startAngle, endAngle: startAngle + .pi, clockwise: false)
+                }
+                for point in rightEdge.reversed().dropFirst() {
+                    polygon.addLine(to: point)
+                }
+                polygon.close()
 
-                let point = visiblePath[i].point
-                leftEdge.append(CGPoint(x: point.x + perpendicular.x * halfWidth,
-                                        y: point.y + perpendicular.y * halfWidth))
-                rightEdge.append(CGPoint(x: point.x - perpendicular.x * halfWidth,
-                                         y: point.y - perpendicular.y * halfWidth))
+                UIColor.systemRed.withAlphaComponent(0.7).setFill()
+                polygon.fill()
             }
-
-            // Draw filled polygon with rounded head
-            let polygon = UIBezierPath()
-            guard let first = leftEdge.first else { continue }
-            polygon.move(to: first)
-            for point in leftEdge.dropFirst() {
-                polygon.addLine(to: point)
-            }
-            // Add semicircle at the head
-            if let lastPoint = visiblePath.last?.point, let lastLeft = leftEdge.last, let lastRight = rightEdge.last {
-                let lastAge = now.timeIntervalSince(visiblePath.last!.time)
-                let lastProgress = CGFloat(1.0 - lastAge / tailDuration)
-                let radius = maxWidth * lastProgress * lastProgress / 2.0
-                let direction = CGPoint(x: lastLeft.x - lastPoint.x, y: lastLeft.y - lastPoint.y)
-                let startAngle = atan2(direction.y, direction.x)
-                polygon.addArc(withCenter: lastPoint, radius: radius, startAngle: startAngle, endAngle: startAngle + .pi, clockwise: false)
-            }
-            for point in rightEdge.reversed().dropFirst() {
-                polygon.addLine(to: point)
-            }
-            polygon.close()
-
-            UIColor.systemRed.withAlphaComponent(0.7).setFill()
-            polygon.fill()
         }
     }
 
