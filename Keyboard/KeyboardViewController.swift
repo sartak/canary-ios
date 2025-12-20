@@ -108,6 +108,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.backgroundColor = UIColor.clear
         keyboardTouchView.shiftState = effectiveShiftState()
         keyboardTouchView.deviceLayout = deviceLayout
+        keyboardTouchView.gestureRecognizer.deviceLayout = deviceLayout
         keyboardTouchView.autocorrectEnabled = !autocorrectUserDisabled
         keyboardTouchView.showHitboxDebug = debugVisualizationEnabled
         keyboardTouchView.characterFrequencies = characterFrequencies
@@ -151,6 +152,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.keyboardTouchView.dismissAlternatesPopup()
         }
 
+        keyboardTouchView.gestureRecognizer.onSwipeStarted = { [weak self] keyData in
+            self?.restoreKeyDisplay(for: keyData)
+        }
+
         keyboardTouchView.onNeedsKeyData = { [weak self] in
             guard let self = self else { return }
             let containerWidth = self.keyboardTouchView.bounds.width
@@ -161,6 +166,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             let effectiveHeight = isLandscape ? screenBounds.width : screenBounds.height
             self.deviceLayout = DeviceLayout.forCurrentDevice(containerWidth: containerWidth, containerHeight: effectiveHeight)
             self.keyboardTouchView.deviceLayout = self.deviceLayout
+            self.keyboardTouchView.gestureRecognizer.deviceLayout = self.deviceLayout
 
             self.keyboardTouchView.keyData = self.createKeyData()
             self.keyboardTouchView.setNeedsDisplay()
@@ -406,10 +412,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func handleKeyTouchUp(_ keyData: KeyData) {
-        keyboardTouchView.setNeedsDisplay()
-
-        keyboardTouchView.keysWithPopouts.remove(keyData.index)
-        hideKeyPopout(for: keyData)
+        restoreKeyDisplay(for: keyData)
 
         // Stop key repeat if this key was repeating
         stopKeyRepeat()
@@ -776,16 +779,18 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     private func showAlternatesPopup(for keyData: KeyData, alternates: [String]) {
         // Hide any existing popout for this key
-        hideKeyPopout(for: keyData)
+        restoreKeyDisplay(for: keyData)
 
         // Show the alternates popup via the touch view
         keyboardTouchView.showAlternatesPopup(for: keyData, alternates: alternates)
     }
 
-    private func hideKeyPopout(for keyData: KeyData) {
-        guard let popout = keyPopouts[keyData.index] else { return }
-        popout.removeFromSuperview()
-        keyPopouts.removeValue(forKey: keyData.index)
+    private func restoreKeyDisplay(for keyData: KeyData) {
+        keyboardTouchView.keysWithPopouts.remove(keyData.index)
+        if let popout = keyPopouts.removeValue(forKey: keyData.index) {
+            popout.removeFromSuperview()
+        }
+        keyboardTouchView.setNeedsDisplay()
     }
 
 

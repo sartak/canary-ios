@@ -20,10 +20,16 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesMove: ((CGPoint) -> Void)?
     var onAlternatesSelect: (() -> Void)?
     var onAlternatesDismiss: (() -> Void)?
+    var onSwipeStarted: ((KeyData) -> Void)?
 
     // Multi-touch support - same as original implementation
     private var touchQueue: [(UITouch, KeyData)] = []
     private var pressedKeys: Set<Int> = []
+
+    // Swipe detection
+    private var touchPaths: [UITouch: [CGPoint]] = [:]
+    private var swipingTouches: Set<UITouch> = []
+    var deviceLayout: DeviceLayout?
 
     // Long press support
     private var longPressTimers: [UITouch: Timer] = [:]
@@ -64,6 +70,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             if let key = hitTestDelegate?.gestureRecognizer(self, keyAt: location) {
                 touchQueue.append((touch, key))
                 pressedKeys.insert(key.index)
+                touchPaths[touch] = [location]
                 onKeyTouchDown?(key)
 
                 // Start long press timer
@@ -78,10 +85,30 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesMoved(touches, with: event)
 
-        // Handle alternates movement
-        if let activeTouch = alternatesActiveTouch, touches.contains(activeTouch) {
-            let location = activeTouch.location(in: view)
-            onAlternatesMove?(location)
+        for touch in touches {
+            // Handle alternates movement
+            if touch == alternatesActiveTouch {
+                let location = touch.location(in: view)
+                onAlternatesMove?(location)
+                continue
+            }
+
+            // Track path
+            let location = touch.location(in: view)
+            touchPaths[touch, default: []].append(location)
+
+            // Check for swipe transition
+            if let threshold = deviceLayout?.swipeDistanceThreshold,
+               !swipingTouches.contains(touch) && !longPressTriggered.contains(touch) {
+                if pathDisplacementSquared(for: touch) >= threshold * threshold {
+                    swipingTouches.insert(touch)
+                    cancelLongPressTimer(for: touch)
+                    if let (_, key) = touchQueue.first(where: { $0.0 === touch }) {
+                        pressedKeys.remove(key.index)
+                        onSwipeStarted?(key)
+                    }
+                }
+            }
         }
     }
 
@@ -101,8 +128,17 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 }
             } else {
                 cancelLongPressTimer(for: touch)
-                processQueueUpToTouch(touch)
+                if swipingTouches.contains(touch) {
+                    // Swipe ended - remove from queue without triggering tap
+                    if let touchIndex = touchQueue.firstIndex(where: { $0.0 === touch }) {
+                        let (_, key) = touchQueue.remove(at: touchIndex)
+                        pressedKeys.remove(key.index)
+                    }
+                } else {
+                    processQueueUpToTouch(touch)
+                }
             }
+            clearSwipeState(for: touch)
         }
 
         // Update gesture state based on remaining touches
@@ -126,6 +162,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 cancelLongPressTimer(for: touch)
                 processQueueUpToTouch(touch)
             }
+            clearSwipeState(for: touch)
         }
 
         // Update gesture state
@@ -155,6 +192,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         super.reset()
         touchQueue.removeAll()
         pressedKeys.removeAll()
+        touchPaths.removeAll()
+        swipingTouches.removeAll()
         cancelAllLongPressTimers()
 
         // Clear alternates state
@@ -207,5 +246,21 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             // Regular long press behavior
             onKeyLongPress?(key)
         }
+    }
+
+    // MARK: - Swipe Detection Helpers
+
+    private func pathDisplacementSquared(for touch: UITouch) -> CGFloat {
+        guard let points = touchPaths[touch],
+              let first = points.first,
+              let last = points.last else { return 0 }
+        let dx = last.x - first.x
+        let dy = last.y - first.y
+        return dx * dx + dy * dy
+    }
+
+    private func clearSwipeState(for touch: UITouch) {
+        touchPaths.removeValue(forKey: touch)
+        swipingTouches.remove(touch)
     }
 }

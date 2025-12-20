@@ -107,4 +107,8 @@ struct DeviceLayout {
         // topPadding + rows + gaps between rows + bottomPadding
         return topPadding + (numberOfRows * keyHeight) + ((numberOfRows - 1) * verticalGap) + bottomPadding
     }
+
+    var swipeDistanceThreshold: CGFloat {
+        alphaKeyWidth * 0.75
+    }
 }
