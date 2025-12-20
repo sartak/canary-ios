@@ -111,4 +111,8 @@ struct DeviceLayout {
     var swipeDistanceThreshold: CGFloat {
         alphaKeyWidth * 0.75
     }
+
+    var swipePathMaxWidth: CGFloat {
+        22
+    }
 }

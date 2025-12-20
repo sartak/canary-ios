@@ -21,14 +21,18 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesSelect: (() -> Void)?
     var onAlternatesDismiss: (() -> Void)?
     var onSwipeStarted: ((KeyData) -> Void)?
+    var onSwipePathUpdated: (() -> Void)?
 
     // Multi-touch support - same as original implementation
     private var touchQueue: [(UITouch, KeyData)] = []
     private var pressedKeys: Set<Int> = []
 
     // Swipe detection
-    private var touchPaths: [UITouch: [CGPoint]] = [:]
+    private var touchPaths: [UITouch: [(point: CGPoint, time: Date)]] = [:]
     private var swipingTouches: Set<UITouch> = []
+    private var fadingPaths: [[(point: CGPoint, time: Date)]] = []
+    private var swipeAnimationTimer: Timer?
+    private let tailDuration: TimeInterval = 0.5
     var deviceLayout: DeviceLayout?
 
     // Long press support
@@ -42,6 +46,10 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
     var pressedKeyIndices: Set<Int> {
         return pressedKeys
+    }
+
+    var activeSwipePaths: [[(point: CGPoint, time: Date)]] {
+        return swipingTouches.compactMap { touchPaths[$0] } + fadingPaths
     }
 
     override init(target: Any?, action: Selector?) {
@@ -70,7 +78,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             if let key = hitTestDelegate?.gestureRecognizer(self, keyAt: location) {
                 touchQueue.append((touch, key))
                 pressedKeys.insert(key.index)
-                touchPaths[touch] = [location]
+                touchPaths[touch] = [(point: location, time: Date())]
                 onKeyTouchDown?(key)
 
                 // Start long press timer
@@ -95,13 +103,14 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
             // Track path
             let location = touch.location(in: view)
-            touchPaths[touch, default: []].append(location)
+            touchPaths[touch, default: []].append((point: location, time: Date()))
 
             // Check for swipe transition
             if let threshold = deviceLayout?.swipeDistanceThreshold,
                !swipingTouches.contains(touch) && !longPressTriggered.contains(touch) {
                 if pathDisplacementSquared(for: touch) >= threshold * threshold {
                     swipingTouches.insert(touch)
+                    startSwipeAnimationTimer()
                     cancelLongPressTimer(for: touch)
                     if let (_, key) = touchQueue.first(where: { $0.0 === touch }) {
                         pressedKeys.remove(key.index)
@@ -128,17 +137,25 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 }
             } else {
                 cancelLongPressTimer(for: touch)
-                if swipingTouches.contains(touch) {
-                    // Swipe ended - remove from queue without triggering tap
+                let wasSwiping = swipingTouches.contains(touch)
+                if wasSwiping {
+                    // Swipe ended - log path and keys touched, move to fading
+                    if let path = touchPaths[touch] {
+                        logSwipePath(path)
+                        fadingPaths.append(path)
+                    }
+                    // Remove from queue without triggering tap
                     if let touchIndex = touchQueue.firstIndex(where: { $0.0 === touch }) {
                         let (_, key) = touchQueue.remove(at: touchIndex)
                         pressedKeys.remove(key.index)
                     }
+                    touchPaths.removeValue(forKey: touch)
+                    swipingTouches.remove(touch)
                 } else {
                     processQueueUpToTouch(touch)
+                    clearSwipeState(for: touch)
                 }
             }
-            clearSwipeState(for: touch)
         }
 
         // Update gesture state based on remaining touches
@@ -252,8 +269,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
     private func pathDisplacementSquared(for touch: UITouch) -> CGFloat {
         guard let points = touchPaths[touch],
-              let first = points.first,
-              let last = points.last else { return 0 }
+              let first = points.first?.point,
+              let last = points.last?.point else { return 0 }
         let dx = last.x - first.x
         let dy = last.y - first.y
         return dx * dx + dy * dy
@@ -262,5 +279,50 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private func clearSwipeState(for touch: UITouch) {
         touchPaths.removeValue(forKey: touch)
         swipingTouches.remove(touch)
+        if swipingTouches.isEmpty && fadingPaths.isEmpty {
+            stopSwipeAnimationTimer()
+        }
+    }
+
+    private func startSwipeAnimationTimer() {
+        guard swipeAnimationTimer == nil else { return }
+        swipeAnimationTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            // Prune fully faded paths
+            let now = Date()
+            self.fadingPaths.removeAll { path in
+                path.allSatisfy { now.timeIntervalSince($0.time) > self.tailDuration }
+            }
+            // Stop timer if nothing left to animate
+            if self.swipingTouches.isEmpty && self.fadingPaths.isEmpty {
+                self.stopSwipeAnimationTimer()
+            }
+            self.onSwipePathUpdated?()
+        }
+    }
+
+    private func stopSwipeAnimationTimer() {
+        swipeAnimationTimer?.invalidate()
+        swipeAnimationTimer = nil
+    }
+
+    private func logSwipePath(_ path: [(point: CGPoint, time: Date)]) {
+        // Log path points
+        let pointsStr = path.map { String(format: "(%.1f, %.1f)", $0.point.x, $0.point.y) }.joined(separator: ", ")
+        print("Swipe path (\(path.count) points): \(pointsStr)")
+
+        // Find keys touched along the path (deduplicated, preserving order)
+        var keysTouched: [String] = []
+        var lastKeyIndex: Int? = nil
+        for entry in path {
+            if let key = hitTestDelegate?.gestureRecognizer(self, keyAt: entry.point),
+               key.index != lastKeyIndex {
+                if case .simple(let char) = key.key.keyType {
+                    keysTouched.append(char)
+                }
+                lastKeyIndex = key.index
+            }
+        }
+        print("Keys touched: \(keysTouched.joined(separator: " -> "))")
     }
 }

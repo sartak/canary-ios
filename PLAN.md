@@ -96,10 +96,9 @@
 **Goal**: Basic gesture recognition for swipe typing
 
 ### Gesture Recognition
-- [ ] Create gesture-on-keyboard path recording system
-- [ ] Add visual feedback during swipe gestures
+- [x] Create gesture-on-keyboard path recording system
+- [x] Add visual feedback during swipe gestures
 - [ ] Create basic path-to-word prediction algorithm
-- [ ] Track accuracy based on whether word was corrected, for further fine-tuning
 
 ## Milestone 9: Learning and Adaptation
 **Goal**: Make keyboard learn user patterns and vocabulary
@@ -110,6 +109,7 @@
 - [ ] Use user dictionary for typeahead and typo correction
 - [ ] Add dictionary management to the main app
 - [ ] Learn a word if it's retyped immediately after an autocorrect of it
+- [ ] Track swipe accuracy based on whether word was corrected, for fine-tuning
 - [ ] Add frequency tracking for typed words
 - [ ] Enhance predictions with learned vocabulary
 - [ ] Implement memory pressure response (release caches, unload unused data)

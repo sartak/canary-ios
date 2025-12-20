@@ -156,6 +156,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.restoreKeyDisplay(for: keyData)
         }
 
+        keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] in
+            self?.keyboardTouchView.setNeedsDisplay()
+        }
+
         keyboardTouchView.onNeedsKeyData = { [weak self] in
             guard let self = self else { return }
             let containerWidth = self.keyboardTouchView.bounds.width
