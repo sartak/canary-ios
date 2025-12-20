@@ -164,6 +164,11 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             guard let self = self, !keySequence.isEmpty else { return }
             let suggestions = self.suggestionService.swipeSuggestions(keySequence: keySequence, shiftState: self.effectiveShiftState())
             self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
+
+            let frequencies = self.suggestionService.swipeFrequencies(keySequence: keySequence)
+            self.characterFrequencies = frequencies
+            self.keyboardTouchView.characterFrequencies = frequencies
+            self.updateKeyHitboxes()
         }
 
         keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence in
@@ -621,12 +626,14 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func handleSwipeEnded(_ keySequence: [SwipeKey]) {
+        // Restore normal frequencies after swipe ends
+        refreshSuggestions()
+
         let shiftState = effectiveShiftState()
         guard let result = suggestionService.decodeSwipe(
             keySequence: keySequence,
             shiftState: shiftState
         ) else {
-            refreshSuggestions()
             return
         }
 

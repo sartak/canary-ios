@@ -96,6 +96,11 @@ class SuggestionService {
         }
     }
 
+    func swipeFrequencies(keySequence: [SwipeKey]) -> CharacterDistribution {
+        let context = String(keySequence.filter(\.isRequired).map(\.character))
+        return frequencyService.distributionForSwipeContext(context)
+    }
+
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
         self.contextBefore = before
         self.contextAfter = after
