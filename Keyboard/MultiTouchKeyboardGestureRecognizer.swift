@@ -36,7 +36,11 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private var swipeAnimationTimer: Timer?
     private let tailDuration: TimeInterval = 0.5
     private(set) var swipeKeySequence: [SwipeKey] = []
+    private var swipeKeyPositions: [CGPoint] = []
     var deviceLayout: DeviceLayout?
+
+    /// Angle change threshold (in radians) for promoting a key to required
+    private let angleChangeThreshold: CGFloat = .pi / 3  // 60 degrees
 
     // Long press support
     private var longPressTimers: [UITouch: Timer] = [:]
@@ -79,6 +83,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         super.touchesBegan(touches, with: event)
 
         swipeKeySequence.removeAll()
+        swipeKeyPositions.removeAll()
 
         for touch in touches {
             // Ignore new touches while alternates are active
@@ -328,6 +333,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
     private func initializeSwipeKeySequence(for touch: UITouch) {
         swipeKeySequence.removeAll()
+        swipeKeyPositions.removeAll()
         guard let path = touchPaths[touch] else { return }
 
         for entry in path {
@@ -351,8 +357,32 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             return
         }
 
+        // Check for significant angle change and promote previous key if needed
+        if swipeKeyPositions.count >= 2 {
+            let prevPrev = swipeKeyPositions[swipeKeyPositions.count - 2]
+            let prev = swipeKeyPositions[swipeKeyPositions.count - 1]
+
+            let dir1 = CGPoint(x: prev.x - prevPrev.x, y: prev.y - prevPrev.y)
+            let dir2 = CGPoint(x: point.x - prev.x, y: point.y - prev.y)
+
+            let angle1 = atan2(dir1.y, dir1.x)
+            let angle2 = atan2(dir2.y, dir2.x)
+            var angleDiff = abs(angle2 - angle1)
+            if angleDiff > .pi {
+                angleDiff = 2 * .pi - angleDiff
+            }
+
+            if angleDiff >= angleChangeThreshold {
+                let lastIndex = swipeKeySequence.count - 1
+                if case .optional(let c) = swipeKeySequence[lastIndex] {
+                    swipeKeySequence[lastIndex] = .required(c)
+                }
+            }
+        }
+
         let swipeKey: SwipeKey = swipeKeySequence.isEmpty ? .required(firstChar) : .optional(firstChar)
         swipeKeySequence.append(swipeKey)
+        swipeKeyPositions.append(point)
         if notify {
             onSwipeKeySequenceChanged?(swipeKeySequence)
         }

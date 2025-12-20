@@ -98,7 +98,7 @@
 ### Gesture Recognition
 - [x] Create gesture-on-keyboard path recording system
 - [x] Add visual feedback during swipe gestures
-- [ ] Create basic path-to-word prediction algorithm
+- [x] Create basic path-to-word prediction algorithm
 
 ## Milestone 9: Learning and Adaptation
 **Goal**: Make keyboard learn user patterns and vocabulary
