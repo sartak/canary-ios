@@ -21,7 +21,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesSelect: (() -> Void)?
     var onAlternatesDismiss: (() -> Void)?
     var onSwipeStarted: ((KeyData) -> Void)?
-    var onSwipePathUpdated: (() -> Void)?
+    var onSwipePathUpdated: (([SwipeKey]) -> Void)?
     var onSwipeEnded: (([SwipeKey]) -> Void)?
 
     // Multi-touch support - same as original implementation
@@ -142,7 +142,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 if wasSwiping {
                     // Swipe ended - extract key sequence and invoke callback
                     if let path = touchPaths[touch] {
-                        let keySequence = extractKeySequence(from: path)
+                        let keySequence = extractKeySequence(from: path, isComplete: true)
                         onSwipeEnded?(keySequence)
                         fadingPaths.append(path)
                     }
@@ -299,7 +299,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             if self.swipingTouches.isEmpty && self.fadingPaths.isEmpty {
                 self.stopSwipeAnimationTimer()
             }
-            self.onSwipePathUpdated?()
+            let keySequence = self.currentSwipeKeySequence()
+            self.onSwipePathUpdated?(keySequence)
         }
     }
 
@@ -308,7 +309,15 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         swipeAnimationTimer = nil
     }
 
-    private func extractKeySequence(from path: [(point: CGPoint, time: Date)]) -> [SwipeKey] {
+    private func currentSwipeKeySequence() -> [SwipeKey] {
+        guard let touch = swipingTouches.first,
+              let path = touchPaths[touch] else {
+            return []
+        }
+        return extractKeySequence(from: path, isComplete: false)
+    }
+
+    private func extractKeySequence(from path: [(point: CGPoint, time: Date)], isComplete: Bool) -> [SwipeKey] {
         var characters: [Character] = []
         var lastKeyIndex: Int? = nil
         for entry in path {
@@ -325,7 +334,9 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             return characters.map { .required($0) }
         }
         return characters.enumerated().map { index, char in
-            (index == 0 || index == characters.count - 1) ? .required(char) : .optional(char)
+            if index == 0 { return .required(char) }
+            if index == characters.count - 1 && isComplete { return .required(char) }
+            return .optional(char)
         }
     }
 }

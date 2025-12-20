@@ -156,8 +156,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.restoreKeyDisplay(for: keyData)
         }
 
-        keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] in
-            self?.keyboardTouchView.setNeedsDisplay()
+        keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] keySequence in
+            guard let self = self else { return }
+            self.keyboardTouchView.setNeedsDisplay()
+            if !keySequence.isEmpty {
+                let suggestions = self.suggestionService.swipeSuggestions(keySequence: keySequence, shiftState: self.effectiveShiftState())
+                self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
+            }
         }
 
         keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence in
@@ -615,16 +620,26 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func handleSwipeEnded(_ keySequence: [SwipeKey]) {
+        let shiftState = effectiveShiftState()
         guard let result = suggestionService.decodeSwipe(
             keySequence: keySequence,
-            shiftState: effectiveShiftState()
+            shiftState: shiftState
         ) else {
+            refreshSuggestions()
             return
         }
 
         executeActions(result.actions)
         autoShift()
-        refreshSuggestions()
+
+        // Show replacement suggestions (tapping replaces the inserted word)
+        let insertedLength = result.word.count + 1 // +1 for trailing space
+        let replacements = suggestionService.swipeReplacements(
+            keySequence: keySequence,
+            shiftState: shiftState,
+            replaceLength: insertedLength
+        )
+        suggestionView.setSuggestions(typeaheads: Array(replacements.dropFirst()), autocorrect: nil)
     }
 
     func switchToLayer(_ layer: Layer) {

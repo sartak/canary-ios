@@ -27,6 +27,8 @@ enum SwipeKey {
 class SwipeService {
     private let db: OpaquePointer
     private let candidatesStatement: OpaquePointer
+    private var cachedPattern: String?
+    private var cachedCandidates: [String] = []
 
     init?(db: OpaquePointer) {
         self.db = db
@@ -34,7 +36,7 @@ class SwipeService {
         let query = """
             SELECT word, frequency_rank FROM words
             WHERE word_lower LIKE ?
-            ORDER BY frequency_rank LIMIT 5
+            ORDER BY frequency_rank LIMIT 10
         """
 
         var stmt: OpaquePointer?
@@ -53,24 +55,41 @@ class SwipeService {
     /// - Parameter keySequence: Array of SwipeKeys crossed during swipe
     /// - Returns: Best matching word, or nil if no match found
     func decode(keySequence: [SwipeKey]) -> String? {
-        queryCandidates(keySequence: keySequence).first
+        queryCandidates(keySequence: keySequence, trailingWildcard: false).first
     }
 
-    private func buildPattern(keySequence: [SwipeKey]) -> String {
+    /// Returns all candidate words for an in-progress swipe path
+    func candidates(keySequence: [SwipeKey]) -> [String] {
+        queryCandidates(keySequence: keySequence, trailingWildcard: true)
+    }
+
+    /// Returns all candidate words for a completed swipe path
+    func finalCandidates(keySequence: [SwipeKey]) -> [String] {
+        queryCandidates(keySequence: keySequence, trailingWildcard: false)
+    }
+
+    static func buildPattern(keySequence: [SwipeKey], trailingWildcard: Bool = false) -> String {
         let required = keySequence.filter(\.isRequired).map(\.character)
         guard !required.isEmpty else { return "" }
 
         var pattern = keySequence.first?.isRequired == true ? "" : "%"
         pattern += required.map(String.init).joined(separator: "%")
-        if keySequence.last?.isRequired == false {
+        if keySequence.last?.isRequired == false || trailingWildcard {
             pattern += "%"
         }
         return pattern
     }
 
-    private func queryCandidates(keySequence: [SwipeKey]) -> [String] {
-        let pattern = buildPattern(keySequence: keySequence)
+    private func queryCandidates(keySequence: [SwipeKey], trailingWildcard: Bool) -> [String] {
+        let pattern = Self.buildPattern(keySequence: keySequence, trailingWildcard: trailingWildcard)
         guard !pattern.isEmpty else { return [] }
+
+        if pattern == cachedPattern {
+            return cachedCandidates
+        }
+
+        let display = keySequence.map(\.display).joined()
+        let startTime = CFAbsoluteTimeGetCurrent()
 
         sqlite3_bind_text(candidatesStatement, 1, pattern, -1,
                           unsafeBitCast(-1, to: sqlite3_destructor_type.self))
@@ -85,6 +104,16 @@ class SwipeService {
         sqlite3_reset(candidatesStatement)
         sqlite3_clear_bindings(candidatesStatement)
 
+        let duration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        if let first = candidates.first {
+            let more = candidates.count - 1
+            print("SwipeService: '\(display)' -> '\(first)' + \(more) more in \(String(format: "%.3f", duration))ms")
+        } else {
+            print("SwipeService: '\(display)' -> no match in \(String(format: "%.3f", duration))ms")
+        }
+
+        cachedPattern = pattern
+        cachedCandidates = candidates
         return candidates
     }
 }

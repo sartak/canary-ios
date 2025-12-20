@@ -66,22 +66,34 @@ class SuggestionService {
     }
 
     func decodeSwipe(keySequence: [SwipeKey], shiftState: ShiftState) -> (word: String, actions: [InputAction])? {
-        let pattern = keySequence.map(\.display).joined()
-
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let word = swipeService.decode(keySequence: keySequence)
-        let endTime = CFAbsoluteTimeGetCurrent()
-        let duration = (endTime - startTime) * 1000
-
-        guard let word = word else {
-            print("SwipeService: '\(pattern)' -> no match in \(String(format: "%.3f", duration))ms")
+        guard let word = swipeService.decode(keySequence: keySequence) else {
             return nil
         }
 
-        print("SwipeService: '\(pattern)' -> '\(word)' in \(String(format: "%.3f", duration))ms")
         let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
         let actions: [InputAction] = [.insert(capitalizedWord + " "), .maybePunctuating(true)]
         return (capitalizedWord, actions)
+    }
+
+    func swipeSuggestions(keySequence: [SwipeKey], shiftState: ShiftState) -> [(String, [InputAction])] {
+        swipeService.candidates(keySequence: keySequence).map { word in
+            let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+            let actions: [InputAction] = [.insert(capitalizedWord + " "), .maybePunctuating(true)]
+            return (capitalizedWord, actions)
+        }
+    }
+
+    func swipeReplacements(keySequence: [SwipeKey], shiftState: ShiftState, replaceLength: Int) -> [(String, [InputAction])] {
+        swipeService.finalCandidates(keySequence: keySequence).map { word in
+            let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+            var actions: [InputAction] = []
+            for _ in 0..<replaceLength {
+                actions.append(.deleteBackward)
+            }
+            actions.append(.insert(capitalizedWord + " "))
+            actions.append(.maybePunctuating(true))
+            return (capitalizedWord, actions)
+        }
     }
 
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
