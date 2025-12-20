@@ -229,7 +229,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         pressedKeys.removeAll()
         touchPaths.removeAll()
         swipingTouches.removeAll()
-        swipeKeySequence.removeAll()
+        // Note: swipeKeySequence is intentionally NOT cleared here - it persists for debug visualization
+        // until the next touchesBegan
         cancelAllLongPressTimers()
 
         // Clear alternates state

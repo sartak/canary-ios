@@ -641,7 +641,12 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     private func handleSwipeEnded(_ keySequence: [SwipeKey]) {
         // Restore normal frequencies after swipe ends
-        refreshSuggestions()
+        let before = textDocumentProxy.documentContextBeforeInput
+        let after = textDocumentProxy.documentContextAfterInput
+        let frequencies = suggestionService.frequenciesForContext(before: before, after: after)
+        characterFrequencies = frequencies
+        keyboardTouchView?.characterFrequencies = frequencies
+        updateKeyHitboxes()
 
         let shiftState = effectiveShiftState()
         guard let result = suggestionService.decodeSwipe(

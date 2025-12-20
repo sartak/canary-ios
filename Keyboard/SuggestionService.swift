@@ -101,12 +101,17 @@ class SuggestionService {
         return frequencyService.distributionForSwipeContext(context)
     }
 
+    func frequenciesForContext(before: String?, after: String?) -> CharacterDistribution {
+        let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
+        return frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)
+    }
+
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
         self.contextBefore = before
         self.contextAfter = after
         self.selectedText = selected
 
-        let (prefix, suffix) = extractCurrentWordContext()
+        let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
 
         let frequencies = frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)
 
@@ -344,9 +349,9 @@ class SuggestionService {
         return false
     }
 
-    private func extractCurrentWordContext() -> (prefix: String, suffix: String) {
+    private static func extractWordContext(before: String?, after: String?) -> (prefix: String, suffix: String) {
         let prefix: String
-        if let before = contextBefore {
+        if let before = before {
             // Find the current word by walking backwards from the end until we hit a non-word character
             var wordStart = before.endIndex
             for index in before.indices.reversed() {
@@ -362,7 +367,7 @@ class SuggestionService {
         }
 
         let suffix: String
-        if let after = contextAfter {
+        if let after = after {
             // Find the suffix by walking forward from the beginning until we hit a non-word character
             var wordEnd = after.startIndex
             for index in after.indices {
