@@ -21,7 +21,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesSelect: (() -> Void)?
     var onAlternatesDismiss: (() -> Void)?
     var onSwipeStarted: ((KeyData) -> Void)?
-    var onSwipePathUpdated: (([SwipeKey]) -> Void)?
+    var onSwipePathUpdated: (() -> Void)?
+    var onSwipeKeySequenceChanged: (([SwipeKey]) -> Void)?
     var onSwipeEnded: (([SwipeKey]) -> Void)?
 
     // Multi-touch support - same as original implementation
@@ -34,6 +35,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private var fadingPaths: [[(point: CGPoint, time: Date)]] = []
     private var swipeAnimationTimer: Timer?
     private let tailDuration: TimeInterval = 0.5
+    private var swipeKeySequence: [SwipeKey] = []
     var deviceLayout: DeviceLayout?
 
     // Long press support
@@ -113,11 +115,14 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                     swipingTouches.insert(touch)
                     startSwipeAnimationTimer()
                     cancelLongPressTimer(for: touch)
+                    initializeSwipeKeySequence(for: touch)
                     if let (_, key) = touchQueue.first(where: { $0.0 === touch }) {
                         pressedKeys.remove(key.index)
                         onSwipeStarted?(key)
                     }
                 }
+            } else if swipingTouches.contains(touch) {
+                appendKeyToSequenceIfNew(at: location)
             }
         }
     }
@@ -140,10 +145,10 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 cancelLongPressTimer(for: touch)
                 let wasSwiping = swipingTouches.contains(touch)
                 if wasSwiping {
-                    // Swipe ended - extract key sequence and invoke callback
+                    // Swipe ended - finalize sequence and invoke callback
+                    let finalSequence = finalizeSwipeKeySequence()
+                    onSwipeEnded?(finalSequence)
                     if let path = touchPaths[touch] {
-                        let keySequence = extractKeySequence(from: path, isComplete: true)
-                        onSwipeEnded?(keySequence)
                         fadingPaths.append(path)
                     }
                     // Remove from queue without triggering tap
@@ -153,6 +158,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                     }
                     touchPaths.removeValue(forKey: touch)
                     swipingTouches.remove(touch)
+                    swipeKeySequence.removeAll()
                 } else {
                     processQueueUpToTouch(touch)
                     clearSwipeState(for: touch)
@@ -213,6 +219,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         pressedKeys.removeAll()
         touchPaths.removeAll()
         swipingTouches.removeAll()
+        swipeKeySequence.removeAll()
         cancelAllLongPressTimers()
 
         // Clear alternates state
@@ -299,8 +306,7 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
             if self.swipingTouches.isEmpty && self.fadingPaths.isEmpty {
                 self.stopSwipeAnimationTimer()
             }
-            let keySequence = self.currentSwipeKeySequence()
-            self.onSwipePathUpdated?(keySequence)
+            self.onSwipePathUpdated?()
         }
     }
 
@@ -309,34 +315,47 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         swipeAnimationTimer = nil
     }
 
-    private func currentSwipeKeySequence() -> [SwipeKey] {
-        guard let touch = swipingTouches.first,
-              let path = touchPaths[touch] else {
-            return []
+    private func initializeSwipeKeySequence(for touch: UITouch) {
+        swipeKeySequence.removeAll()
+        guard let path = touchPaths[touch] else { return }
+
+        for entry in path {
+            appendKeyToSequenceIfNew(at: entry.point, notify: false)
         }
-        return extractKeySequence(from: path, isComplete: false)
+
+        if !swipeKeySequence.isEmpty {
+            onSwipeKeySequenceChanged?(swipeKeySequence)
+        }
     }
 
-    private func extractKeySequence(from path: [(point: CGPoint, time: Date)], isComplete: Bool) -> [SwipeKey] {
-        var characters: [Character] = []
-        var lastKeyIndex: Int? = nil
-        for entry in path {
-            if let key = hitTestDelegate?.gestureRecognizer(self, keyAt: entry.point),
-               key.index != lastKeyIndex {
-                if case .simple(let char) = key.key.keyType,
-                   let firstChar = char.lowercased().first {
-                    characters.append(firstChar)
-                }
-                lastKeyIndex = key.index
-            }
+    private func appendKeyToSequenceIfNew(at point: CGPoint, notify: Bool = true) {
+        guard let key = hitTestDelegate?.gestureRecognizer(self, keyAt: point),
+              case .simple(let char) = key.key.keyType,
+              let firstChar = char.lowercased().first else {
+            return
         }
-        guard characters.count >= 2 else {
-            return characters.map { .required($0) }
+
+        // Check if this is a different key than the last one
+        if swipeKeySequence.last?.character == firstChar {
+            return
         }
-        return characters.enumerated().map { index, char in
-            if index == 0 { return .required(char) }
-            if index == characters.count - 1 && isComplete { return .required(char) }
-            return .optional(char)
+
+        let swipeKey: SwipeKey = swipeKeySequence.isEmpty ? .required(firstChar) : .optional(firstChar)
+        swipeKeySequence.append(swipeKey)
+        if notify {
+            onSwipeKeySequenceChanged?(swipeKeySequence)
         }
+    }
+
+    private func finalizeSwipeKeySequence() -> [SwipeKey] {
+        guard swipeKeySequence.count >= 2 else { return swipeKeySequence }
+
+        // Change last entry to required
+        var finalSequence = swipeKeySequence
+        let lastIndex = finalSequence.count - 1
+        if case .optional(let char) = finalSequence[lastIndex] {
+            finalSequence[lastIndex] = .required(char)
+        }
+        return finalSequence
     }
 }

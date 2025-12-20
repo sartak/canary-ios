@@ -156,13 +156,14 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self?.restoreKeyDisplay(for: keyData)
         }
 
-        keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] keySequence in
-            guard let self = self else { return }
-            self.keyboardTouchView.setNeedsDisplay()
-            if !keySequence.isEmpty {
-                let suggestions = self.suggestionService.swipeSuggestions(keySequence: keySequence, shiftState: self.effectiveShiftState())
-                self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
-            }
+        keyboardTouchView.gestureRecognizer.onSwipePathUpdated = { [weak self] in
+            self?.keyboardTouchView.setNeedsDisplay()
+        }
+
+        keyboardTouchView.gestureRecognizer.onSwipeKeySequenceChanged = { [weak self] keySequence in
+            guard let self = self, !keySequence.isEmpty else { return }
+            let suggestions = self.suggestionService.swipeSuggestions(keySequence: keySequence, shiftState: self.effectiveShiftState())
+            self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
         }
 
         keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence in
