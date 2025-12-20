@@ -39,6 +39,10 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private var swipeKeyPositions: [CGPoint] = []
     var deviceLayout: DeviceLayout?
 
+    func setSwipeKeySequence(_ sequence: [SwipeKey]) {
+        swipeKeySequence = sequence
+    }
+
     /// Angle change threshold (in radians) for promoting a key to required
     private let angleChangeThreshold: CGFloat = .pi / 3  // 60 degrees
 

@@ -31,6 +31,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     var autocorrectWordDisabled = false
     var undoActions: [InputAction]?
     private var debugVisualizationEnabled = false
+    private var lastSwipePath: [CGPoint] = []
+    private var lastSwipeKeySequence: [SwipeKey] = []
     private var characterFrequencies: CharacterDistribution?
     private var charBeforeCursor: Character?
     private var backspaceShiftState: ShiftState = .unshifted
@@ -111,6 +113,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.gestureRecognizer.deviceLayout = deviceLayout
         keyboardTouchView.autocorrectEnabled = !autocorrectUserDisabled
         keyboardTouchView.showHitboxDebug = debugVisualizationEnabled
+        if debugVisualizationEnabled {
+            keyboardTouchView.setDebugSwipePath(lastSwipePath)
+            keyboardTouchView.gestureRecognizer.setSwipeKeySequence(lastSwipeKeySequence)
+        }
         keyboardTouchView.characterFrequencies = characterFrequencies
         keyboardTouchView.keyData = createKeyData()
         keyboardTouchView.setNeedsDisplay()
@@ -153,6 +159,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
 
         keyboardTouchView.gestureRecognizer.onSwipeStarted = { [weak self] keyData in
+            self?.lastSwipePath.removeAll()
+            self?.lastSwipeKeySequence.removeAll()
             self?.restoreKeyDisplay(for: keyData)
         }
 
@@ -180,6 +188,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
         keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence, pathPoints in
             guard let self = self else { return }
+            self.lastSwipePath = pathPoints
+            self.lastSwipeKeySequence = keySequence
             if self.keyboardTouchView.showHitboxDebug {
                 self.keyboardTouchView.setDebugSwipePath(pathPoints)
             }
@@ -915,6 +925,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             keyboardTouchView?.showHitboxDebug = debugVisualizationEnabled
             editingBarView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
             suggestionView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
+            if debugVisualizationEnabled {
+                keyboardTouchView?.setDebugSwipePath(lastSwipePath)
+                keyboardTouchView?.gestureRecognizer.setSwipeKeySequence(lastSwipeKeySequence)
+            }
             keyboardTouchView?.setNeedsDisplay()
         }
     }
