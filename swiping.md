@@ -333,10 +333,14 @@ score(w) = exp(−x_s² / (2σ_s²)) · exp(−x_l² / (2σ_l²)) · P(w)^γ
   Sharpened twice from 0.8 on on-device data: the true word consistently shows
   a decisively lower x_l than frequent impostors, and this channel has to
   convert that into rank.)
-- `P(w)`: Zipf approximation from the existing `frequency_rank`
-  (`P(w) ∝ 1 / rank`, normalized by the harmonic number H₈₉₄₀₄ ≈ 12.0). No schema
-  change needed; if we later want true counts, `corpus/word_frequencies.txt`
-  already has them and this is a one-column addition.
+- `P(w)`: true corpus probability `frequency / totalFrequency`, with counts from
+  Norvig's `count_1w.txt` (Google Web Trillion Word Corpus — the same list
+  `word_frequencies.txt`'s ordering was derived from, orthography restored)
+  stored in a `frequency` column on `words`. Words absent from the count list
+  (a few rare contractions) fall back to the list's tail count. Apostrophe
+  mergers are inherited from the source: Norvig's `were` count includes every
+  "we're", so both spellings share it. (Originally shipped as a Zipf
+  approximation `P(w) ∝ 1/rank` before the count source was identified.)
 - `γ` default **0.1**: the LM-vs-geometry balance. γ=1 lets frequency steamroll
   geometry (the current design's failure mode, inverted); γ=0 ignores frequency.
   This is the single most user-feelable knob, tuned twice on-device (0.4 → 0.2
@@ -698,8 +702,9 @@ parallelizable any time after M0 (M4's tests use the fixture DB from M3).
 
 - **Dwell/loop detection for double letters** — timestamps are already recorded
   (`touchPaths` stores `(point, time)`); a dwell feature could bias "too" over "to".
-- **True frequency counts** — replace the Zipf-from-rank prior with real counts
-  from `corpus/word_frequencies.txt` (one DB column).
+- **True frequency counts** — DONE: the prior uses real counts from Norvig's
+  `count_1w.txt` (see §4.5); `word_frequencies.txt` turned out to be that list's
+  ordering with orthography restored.
 - **Context prior** — condition `P(w)` on the previous word once n-gram data
   exists beyond the current character-level bigram/trigram tables.
 - **Incremental probabilistic decoding (design C)** — the location channel is the

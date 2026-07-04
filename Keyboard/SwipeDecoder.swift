@@ -32,11 +32,11 @@ final class SwipeDecoder {
     /// lazily when key centers change (rotation / layout switch).
     private var cache: SwipeTemplateCache?
 
-    /// log(H_N) where H_N ≈ ln(N) + γ (Euler–Mascheroni) is the harmonic
-    /// number normalizing the Zipf prior. Depends only on the lexicon size,
-    /// so it is computed once. N is clamped to ≥ 2 to keep the log positive.
-    private lazy var logHarmonic: Double =
-        log(log(Double(max(lexicon.wordCount, 2))) + 0.5772156649)
+    /// log of the lexicon's total occurrence count, normalizing the frequency
+    /// prior: log P(w) = log(frequency) − logTotalFrequency. Depends only on
+    /// the lexicon, so it is computed once.
+    private lazy var logTotalFrequency: Double =
+        log(Double(lexicon.totalFrequency))
 
     // Squared Gaussian sigmas, precomputed in Double (score is in log space).
     private static let sigmaShapeSq = Double(SwipeTuning.sigmaShape) * Double(SwipeTuning.sigmaShape)
@@ -196,9 +196,10 @@ final class SwipeDecoder {
             let xl = PathGeometry.weightedPointwiseDistance(userResampled, templatePoints,
                                                             weights: weights) / keyPitch
 
-            // Zipf prior: log P(w) = −log(rank) − log(H_N). rank ≥ 1 always
-            // holds for frequency_rank; clamp defensively against log(0).
-            let logPrior = -log(Double(max(entry.frequencyRank, 1))) - logHarmonic
+            // Frequency prior: log P(w) = log(count) − log(total), with true
+            // counts from the Google Web Trillion Word Corpus. Clamped against
+            // log(0) in case of a defective zero count.
+            let logPrior = log(Double(max(entry.frequency, 1))) - logTotalFrequency
             let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
                 - Double(xl * xl) / (2 * Self.sigmaLocationSq)
                 + SwipeTuning.lmWeight * logPrior

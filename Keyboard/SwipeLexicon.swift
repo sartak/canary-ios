@@ -11,6 +11,9 @@ import SQLite3
 struct SwipeLexiconEntry {
     let word: String
     let frequencyRank: Int
+    /// Occurrence count from the Google Web Trillion Word Corpus
+    /// (Norvig count_1w.txt); the swipe prior is frequency / totalFrequency.
+    let frequency: Int
 }
 
 /// Frequency-ranked candidate retrieval for swipe decoding, pruned by the
@@ -23,16 +26,16 @@ final class SwipeLexicon {
         self.db = db
     }
 
-    /// Visible word count, for normalizing the Zipf prior.
-    lazy var wordCount: Int = {
+    /// Total occurrence count across visible words, for normalizing the prior.
+    lazy var totalFrequency: Int = {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM words WHERE hidden = 0", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT SUM(frequency) FROM words WHERE hidden = 0", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else {
-            return 0
+            return 1
         }
         defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
-        return Int(sqlite3_column_int64(statement, 0))
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 1 }
+        return max(Int(sqlite3_column_int64(statement, 0)), 1)
     }()
 
     /// Candidates for a completed swipe: first and last letters constrained.
@@ -55,7 +58,7 @@ final class SwipeLexicon {
         if let endLetters, endLetters.isEmpty { return [] }
 
         var sql = """
-            SELECT word, frequency_rank FROM words
+            SELECT word, frequency_rank, frequency FROM words
             WHERE first_char IN (\(placeholders(startLetters.count)))
             """
         if let endLetters {
@@ -86,7 +89,8 @@ final class SwipeLexicon {
             if let wordPtr = sqlite3_column_text(statement, 0) {
                 entries.append(SwipeLexiconEntry(
                     word: String(cString: wordPtr),
-                    frequencyRank: Int(sqlite3_column_int64(statement, 1))
+                    frequencyRank: Int(sqlite3_column_int64(statement, 1)),
+                    frequency: Int(sqlite3_column_int64(statement, 2))
                 ))
             }
         }

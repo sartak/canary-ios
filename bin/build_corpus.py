@@ -143,6 +143,7 @@ def create_database_tables(conn: sqlite3.Connection):
             first_char TEXT NOT NULL DEFAULT '',
             last_char TEXT NOT NULL DEFAULT '',
             distinct_key_count INTEGER NOT NULL DEFAULT 0,
+            frequency INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (word_lower, frequency_rank)
         ) WITHOUT ROWID
     ''')
@@ -209,7 +210,7 @@ def create_database_tables(conn: sqlite3.Connection):
     conn.execute('CREATE INDEX idx_symspell_covering ON symspell_deletes (delete_hash, frequency_rank, word)')
 
     # Covering index for swipe candidate pruning by first/last letter (swiping.md §4.4)
-    conn.execute('CREATE INDEX idx_words_swipe ON words (first_char, last_char, frequency_rank, word, hidden, distinct_key_count)')
+    conn.execute('CREATE INDEX idx_words_swipe ON words (first_char, last_char, frequency_rank, word, hidden, distinct_key_count, frequency)')
 
     conn.commit()
 
@@ -245,6 +246,20 @@ def populate_prefixes_table(conn: sqlite3.Connection, filtered_words: List[Tuple
     print(f"Populated prefixes table with {len(prefixes_data)} prefix entries (capped at 20 visible per prefix)")
 
 
+def load_word_counts(filepath: str) -> Dict[str, int]:
+    """Load Norvig count_1w.txt (word<TAB>count, Google Web Trillion Word Corpus).
+
+    word_frequencies.txt is this list's ordering with apostrophes/capitalization
+    restored; look counts up via the same normalization (strip non a-z).
+    """
+    counts = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            word, count = line.split('\t')
+            counts[word] = int(count)
+    return counts
+
+
 def swipe_columns(word_lower: str) -> Tuple[str, str, int]:
     """First/last letter and distinct-key count of the letters-only form.
 
@@ -259,9 +274,14 @@ def swipe_columns(word_lower: str) -> Tuple[str, str, int]:
     return (letters[0], letters[-1], distinct_key_count)
 
 
-def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, int]], hidden_words: Set[str]):
+def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, int]],
+                      hidden_words: Set[str], word_counts: Dict[str, int]):
     """Populate the database tables with filtered words."""
     print("Populating database tables...")
+
+    # Words absent from the count list (a handful of rare contractions) get
+    # the list's tail count rather than zero, keeping log(frequency) finite.
+    fallback_count = min(word_counts.values())
 
     words_data = []
     words_by_suffix_data = []
@@ -271,10 +291,11 @@ def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, 
         word_lower_reversed = word_lower[::-1]
         is_hidden = 1 if word_lower in hidden_words else 0
         first_char, last_char, distinct_key_count = swipe_columns(word_lower)
+        frequency = word_counts.get(re.sub(r'[^a-z]', '', word_lower), fallback_count)
 
         # Data for words table
         words_data.append((word_lower, word_lower_reversed, rank, word, is_hidden,
-                           first_char, last_char, distinct_key_count))
+                           first_char, last_char, distinct_key_count, frequency))
 
         # Data for words_by_suffix table
         words_by_suffix_data.append((word_lower_reversed, rank, word, word_lower, is_hidden))
@@ -282,8 +303,8 @@ def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, 
     # Batch insert for performance
     conn.executemany(
         '''INSERT INTO words (word_lower, word_lower_reversed, frequency_rank, word, hidden,
-                              first_char, last_char, distinct_key_count)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                              first_char, last_char, distinct_key_count, frequency)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
         words_data
     )
 
@@ -436,6 +457,10 @@ def build_filtered_corpus():
     hidden_words = load_hidden_words('corpus/hidden_words.txt')
     print(f"Loaded {len(hidden_words)} hidden words")
 
+    print("Loading word counts...")
+    word_counts = load_word_counts('corpus/count_1w.txt')
+    print(f"Loaded {len(word_counts)} word counts")
+
     print("Filtering words...")
     filtered_words = []
     for word_lower, (original_word, rank) in word_list.items():
@@ -464,7 +489,7 @@ def build_filtered_corpus():
     conn = sqlite3.connect(db_path)
     try:
         create_database_tables(conn)
-        populate_database(conn, filtered_words, hidden_words)
+        populate_database(conn, filtered_words, hidden_words, word_counts)
         populate_prefixes_table(conn, filtered_words, hidden_words)
         populate_symspell_tables(conn, filtered_words, hidden_words)
         populate_kv_table(conn)
