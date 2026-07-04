@@ -19,6 +19,10 @@ struct SwipeCandidate {
     let shapeDistance: CGFloat
     /// Location-channel distance x_l, in key-pitch units.
     let locationDistance: CGFloat
+    /// Double-letter loop bonus already folded into `logScore`, in log units;
+    /// exposed so the breakdown can separate it from the frequency prior
+    /// (swiping.md §4.10). Zero when no loop matched this candidate.
+    let loopBonus: Double
 }
 
 /// Two-channel (shape + location) template scoring with a frequency prior
@@ -66,14 +70,22 @@ final class SwipeDecoder {
     func decode(path: [CGPoint], keyCenters: KeyCenters, keyPitch: CGFloat,
                 limit: Int = 10) -> [SwipeCandidate] {
         let startTime = CFAbsoluteTimeGetCurrent()
-        let userArcLength = PathGeometry.arcLength(path)
         // Post-threshold swipes always satisfy this; the pure function must
         // still not crash on a degenerate path (swiping.md §7).
-        guard path.count >= 2, userArcLength > 0, keyPitch > 0,
-              let start = path.first, let end = path.last else { return [] }
+        guard path.count >= 2, PathGeometry.arcLength(path) > 0, keyPitch > 0
+            else { return [] }
+
+        // Excise any double-letter loops before scoring so they add neither arc
+        // length nor location error against the collapsed templates; the matched
+        // loop events feed the per-candidate bonus below (swiping.md §4.10).
+        let (scoringPath, loopEvents) = loopScoring(path: path, keyCenters: keyCenters,
+                                                    keyPitch: keyPitch)
+        let userArcLength = PathGeometry.arcLength(scoringPath)
+        guard userArcLength > 0, let start = scoringPath.first,
+              let end = scoringPath.last else { return [] }
 
         let cache = templateCache(for: keyCenters)
-        let userResampled = PathGeometry.resample(path, count: SwipeTuning.resampleCount)
+        let userResampled = PathGeometry.resample(scoringPath, count: SwipeTuning.resampleCount)
         let userNormalized = PathGeometry.normalized(userResampled, toSize: 1)
 
         let radius = SwipeTuning.pruneRadius * keyPitch
@@ -89,12 +101,14 @@ final class SwipeDecoder {
                                      userArcLength: userArcLength,
                                      keyPitch: keyPitch,
                                      weights: Self.locationWeights,
+                                     loopEvents: loopEvents,
                                      limit: limit, live: false)
 
         let duration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
         logDecodeBreakdown(ranked, startLetters: startLetters, endLetters: endLetters,
                            userArcLength: userArcLength, keyPitch: keyPitch,
-                           candidates: entries.count, skipped: skipped, duration: duration)
+                           candidates: entries.count, skipped: skipped,
+                           loopEvents: loopEvents, cache: cache, duration: duration)
 
         // Confidence gate: reject only when the best candidate is far in BOTH
         // channels — a wildly wrong insertion is worse than none.
@@ -115,12 +129,19 @@ final class SwipeDecoder {
     func liveCandidates(path: [CGPoint], keyCenters: KeyCenters, keyPitch: CGFloat,
                         limit: Int = 10) -> [SwipeCandidate] {
         let startTime = CFAbsoluteTimeGetCurrent()
-        let userArcLength = PathGeometry.arcLength(path)
-        guard path.count >= 2, userArcLength > 0, keyPitch > 0,
-              let start = path.first else { return [] }
+        guard path.count >= 2, PathGeometry.arcLength(path) > 0, keyPitch > 0
+            else { return [] }
+
+        // Loops signal doubled letters mid-swipe here too; excise them and match
+        // events on character alone (partial-path arc fractions are not directly
+        // comparable to the full template's, swiping.md §4.10).
+        let (scoringPath, loopEvents) = loopScoring(path: path, keyCenters: keyCenters,
+                                                    keyPitch: keyPitch)
+        let userArcLength = PathGeometry.arcLength(scoringPath)
+        guard userArcLength > 0, let start = scoringPath.first else { return [] }
 
         let cache = templateCache(for: keyCenters)
-        let userResampled = PathGeometry.resample(path, count: SwipeTuning.resampleCount)
+        let userResampled = PathGeometry.resample(scoringPath, count: SwipeTuning.resampleCount)
         let userNormalized = PathGeometry.normalized(userResampled, toSize: 1)
 
         let radius = SwipeTuning.pruneRadius * keyPitch
@@ -134,6 +155,7 @@ final class SwipeDecoder {
                                      userArcLength: userArcLength,
                                      keyPitch: keyPitch,
                                      weights: Self.liveLocationWeights,
+                                     loopEvents: loopEvents,
                                      limit: limit, live: true)
 
         let duration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
@@ -151,7 +173,9 @@ final class SwipeDecoder {
     private func rank(entries: [SwipeLexiconEntry], cache: SwipeTemplateCache,
                       userResampled: [CGPoint], userNormalized: [CGPoint],
                       userArcLength: CGFloat, keyPitch: CGFloat,
-                      weights: [CGFloat], limit: Int,
+                      weights: [CGFloat],
+                      loopEvents: [(character: Character, arcFraction: CGFloat)],
+                      limit: Int,
                       live: Bool) -> (ranked: [SwipeCandidate], skipped: Int) {
         var scored: [SwipeCandidate] = []
         scored.reserveCapacity(entries.count)
@@ -196,6 +220,26 @@ final class SwipeDecoder {
             let xl = PathGeometry.weightedPointwiseDistance(userResampled, templatePoints,
                                                             weights: weights) / keyPitch
 
+            // Double-letter loop bonus: each detected loop that matches one of
+            // this candidate's doubled letters adds `doubleLetterBonus`. Matched
+            // template entries are consumed so two loops can't claim one double;
+            // unmatched loops cost nothing (excision already neutralized them).
+            // Live decodes match on character only (§4.10).
+            var loopBonus = 0.0
+            if !loopEvents.isEmpty && !template.doubledLetters.isEmpty {
+                var available = template.doubledLetters
+                for event in loopEvents {
+                    if let matchIndex = available.firstIndex(where: { doubled in
+                        doubled.character == event.character
+                            && (live || abs(doubled.arcFraction - event.arcFraction)
+                                        <= SwipeTuning.loopMatchTolerance)
+                    }) {
+                        loopBonus += SwipeTuning.doubleLetterBonus
+                        available.remove(at: matchIndex)
+                    }
+                }
+            }
+
             // Frequency prior: log P(w) = log(count) − log(total), with true
             // counts from the Google Web Trillion Word Corpus. Clamped against
             // log(0) in case of a defective zero count.
@@ -203,9 +247,11 @@ final class SwipeDecoder {
             let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
                 - Double(xl * xl) / (2 * Self.sigmaLocationSq)
                 + SwipeTuning.lmWeight * logPrior
+                + loopBonus
 
             scored.append(SwipeCandidate(word: entry.word, logScore: logScore,
-                                         shapeDistance: xs, locationDistance: xl))
+                                         shapeDistance: xs, locationDistance: xl,
+                                         loopBonus: loopBonus))
         }
 
         let ranked = Array(scored.sorted { $0.logScore > $1.logScore }.prefix(limit))
@@ -224,6 +270,89 @@ final class SwipeDecoder {
         let created = SwipeTemplateCache(keyCenters: keyCenters)
         cache = created
         return created
+    }
+
+    /// Detects double-letter loops on the raw path, maps each to the nearest
+    /// key, and excises the loops so the remaining polyline scores like a normal
+    /// swipe. Returns the de-looped scoring path and one event per matched loop
+    /// (swiping.md §4.10). Falls back to `(path, [])` — no excision, no bonus —
+    /// when no loop is found, no loop lands on a key, or excision would collapse
+    /// the path (the whole path is one big loop).
+    private func loopScoring(path: [CGPoint], keyCenters: KeyCenters, keyPitch: CGFloat)
+        -> (scoringPath: [CGPoint], events: [(character: Character, arcFraction: CGFloat)]) {
+        let loops = PathGeometry.detectLoops(in: path,
+                                             minTurn: SwipeTuning.loopMinTurn,
+                                             maxRadius: SwipeTuning.loopMaxRadius * keyPitch)
+        // A wiggle — a quick back-and-forth on a key — is the other natural
+        // double-letter gesture; signed loop accumulation cancels it, so a
+        // separate detector keyed on reversal legs finds it (swiping.md §4.10).
+        let wiggles = PathGeometry.detectWiggles(in: path,
+                                                 apexTurn: SwipeTuning.wiggleApexTurn,
+                                                 minLeg: SwipeTuning.wiggleMinLeg * keyPitch,
+                                                 maxLeg: SwipeTuning.wiggleMaxLeg * keyPitch)
+        // Merge: keep every loop, then add each wiggle whose arc-range does NOT
+        // overlap any loop's. A small circle can trip both detectors — the loop
+        // wins, so one gesture never yields two events/bonuses. Loops are
+        // mutually non-overlapping and so are wiggles, so the result is too.
+        var merged = loops
+        for wiggle in wiggles where !loops.contains(where: {
+            wiggle.arcStart <= $0.arcEnd && $0.arcStart <= wiggle.arcEnd
+        }) {
+            merged.append(wiggle)
+        }
+        guard !merged.isEmpty else { return (path, []) }
+
+        let radius = SwipeTuning.pruneRadius * keyPitch
+        var matched: [(loop: PathLoop, character: Character)] = []
+        for loop in merged {
+            if let character = nearestLetter(to: loop.centroid, in: keyCenters, within: radius) {
+                matched.append((loop: loop, character: character))
+            }
+        }
+        guard !matched.isEmpty else { return (path, []) }
+
+        let sorted = matched.sorted { $0.loop.arcStart < $1.loop.arcStart }
+        let ranges = sorted.map { (start: $0.loop.arcStart, end: $0.loop.arcEnd) }
+        let excised = PathGeometry.excising(path, arcRanges: ranges)
+        // Nothing removed (excision would leave < 2 points, so it was skipped):
+        // treat as no loops — neither excise nor award a bonus.
+        guard excised.count < path.count else { return (path, []) }
+
+        // Event positions are matched against template arc fractions, which are
+        // loop-free by construction — so measure each loop's ENTRY point on the
+        // de-looped path: subtract the spans of earlier excised loops, normalize
+        // by the excised total. (The raw-path fraction is systematically low: a
+        // trailing loop's own circumference inflates the denominator, putting a
+        // final-letter double at ~0.7 instead of 1.0.)
+        let excisedTotal = PathGeometry.arcLength(excised)
+        guard excisedTotal > 0 else { return (path, []) }
+        var removedBefore: CGFloat = 0
+        var events: [(character: Character, arcFraction: CGFloat)] = []
+        for item in sorted {
+            let adjusted = (item.loop.arcStart - removedBefore) / excisedTotal
+            events.append((character: item.character,
+                           arcFraction: min(max(adjusted, 0), 1)))
+            removedBefore += item.loop.arcEnd - item.loop.arcStart
+        }
+        return (excised, events)
+    }
+
+    /// The character whose key center is nearest `point`, within `radius`, or
+    /// nil if none is that close — maps a loop centroid to the key it circles.
+    private func nearestLetter(to point: CGPoint, in keyCenters: KeyCenters,
+                               within radius: CGFloat) -> Character? {
+        var best: Character?
+        var bestDistance = radius
+        for (character, center) in keyCenters.centers {
+            let dx = center.x - point.x
+            let dy = center.y - point.y
+            let d = (dx * dx + dy * dy).squareRoot()
+            if d <= bestDistance {
+                bestDistance = d
+                best = character
+            }
+        }
+        return best
     }
 
     /// Letters whose key center lies within `radius` (key-pitch × pruneRadius)
@@ -249,23 +378,41 @@ final class SwipeDecoder {
     private func logDecodeBreakdown(_ ranked: [SwipeCandidate],
                                     startLetters: Set<Character>, endLetters: Set<Character>,
                                     userArcLength: CGFloat, keyPitch: CGFloat,
-                                    candidates: Int, skipped: Int, duration: Double) {
+                                    candidates: Int, skipped: Int,
+                                    loopEvents: [(character: Character, arcFraction: CGFloat)],
+                                    cache: SwipeTemplateCache,
+                                    duration: Double) {
         let pitches = Double(userArcLength / keyPitch)
+        let loopStr = loopEvents.isEmpty ? "" :
+            " loops=[" + loopEvents.map {
+                "\($0.character)@" + String(format: "%.2f", Double($0.arcFraction))
+            }.joined(separator: ",") + "]"
         print("SwipeDecoder: start={\(String(startLetters.sorted()))} " +
               "end={\(String(endLetters.sorted()))} " +
               "len=\(String(format: "%.1f", pitches)) pitches, " +
-              "\(candidates) candidates, \(skipped) skipped, in \(ms(duration))ms")
+              "\(candidates) candidates, \(skipped) skipped, in \(ms(duration))ms" + loopStr)
         for (index, candidate) in ranked.prefix(5).enumerated() {
             let shapeTerm = -Double(candidate.shapeDistance * candidate.shapeDistance)
                 / (2 * Self.sigmaShapeSq)
             let locationTerm = -Double(candidate.locationDistance * candidate.locationDistance)
                 / (2 * Self.sigmaLocationSq)
-            let priorTerm = candidate.logScore - shapeTerm - locationTerm
-            print(String(format: "SwipeDecoder:   %d. '%@' xs=%.2f (%+.2f) xl=%.2f (%+.2f) prior (%+.2f) = %+.2f",
+            let priorTerm = candidate.logScore - shapeTerm - locationTerm - candidate.loopBonus
+            var loopTerm = candidate.loopBonus != 0
+                ? String(format: " loop(%+.2f)", candidate.loopBonus) : ""
+            // When loops were detected, show where each candidate's doubled
+            // letters sit so match/no-match is diagnosable from one line.
+            if !loopEvents.isEmpty,
+               let doubled = cache.template(for: candidate.word)?.doubledLetters,
+               !doubled.isEmpty {
+                loopTerm += " dbl=[" + doubled.map {
+                    "\($0.character)@" + String(format: "%.2f", Double($0.arcFraction))
+                }.joined(separator: ",") + "]"
+            }
+            print(String(format: "SwipeDecoder:   %d. '%@' xs=%.2f (%+.2f) xl=%.2f (%+.2f) prior (%+.2f)%@ = %+.2f",
                          index + 1, candidate.word,
                          Double(candidate.shapeDistance), shapeTerm,
                          Double(candidate.locationDistance), locationTerm,
-                         priorTerm, candidate.logScore))
+                         priorTerm, loopTerm, candidate.logScore))
         }
     }
 

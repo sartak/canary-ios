@@ -66,4 +66,38 @@ enum SwipeTuning {
 
     /// Template cache entries before wholesale eviction.
     static let templateCacheCapacity = 10_000
+
+    /// Minimum signed turning, in radians (~270°), for a mid-swipe loop to count
+    /// as a double-letter signal. Signed accumulation means back-and-forth
+    /// wobble cancels rather than accruing (swiping.md §4.10).
+    static let loopMinTurn: CGFloat = 4.7
+
+    /// Maximum loop radius, in key-pitch units: the loop must stay this tight
+    /// around its centroid to be read as a deliberate circle rather than a
+    /// normal cornering of the path.
+    static let loopMaxRadius: CGFloat = 0.9
+
+    /// Arc-fraction window for matching a detected loop to a template's doubled
+    /// letter (final decodes only; live decodes match on character alone).
+    static let loopMatchTolerance: CGFloat = 0.25
+
+    /// Bonus added to a candidate's log score, in log units, for each detected
+    /// loop that matches one of its doubled letters. Sized to beat the to/too
+    /// prior gap (~0.6 at lmWeight 0.1) so the loop decides that pair.
+    static let doubleLetterBonus: Double = 1.0
+
+    /// Minimum turn, in radians (~115°), a reversal apex must reach within at
+    /// most two fine-resample vertices to count as a wiggle apex — the natural
+    /// back-and-forth double-letter gesture that signed loop accumulation is
+    /// blind to (swiping.md §4.10).
+    static let wiggleApexTurn: CGFloat = 2.0
+
+    /// Minimum wiggle leg length, in key-pitch units: below this a reversal is
+    /// jitter, not a deliberate gesture.
+    static let wiggleMinLeg: CGFloat = 0.12
+
+    /// Maximum wiggle leg length, in key-pitch units: above this a reversal is
+    /// lexical travel between distinct letters (adjacent keys are >= 1 pitch
+    /// apart), not a wiggle on a single key.
+    static let wiggleMaxLeg: CGFloat = 0.65
 }

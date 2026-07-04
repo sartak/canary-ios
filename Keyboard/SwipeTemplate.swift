@@ -28,6 +28,11 @@ struct SwipeTemplate {
     /// shape channel; precomputed once per template.
     let normalizedPoints: [CGPoint]
     let idealArcLength: CGFloat
+    /// Letters doubled in the word ("too" → o), with the arc fraction (0…1) of
+    /// the doubled key along the template polyline. Loops detected in the user
+    /// path are matched against these (swiping.md §4.10). Empty for words with
+    /// no doubled letters.
+    let doubledLetters: [(character: Character, arcFraction: CGFloat)]
 
     /// Returns nil when the word cannot be expressed as a swipe: after
     /// dropping characters with no key (apostrophes) and collapsing
@@ -36,15 +41,38 @@ struct SwipeTemplate {
                      keyCenters: KeyCenters,
                      resampleCount: Int = SwipeTuning.resampleCount) -> SwipeTemplate? {
         var polyline: [CGPoint] = []
+        // Doubled letters recorded as (character, polyline vertex index of the
+        // single surviving key point); converted to arc fractions below.
+        var doubledIndices: [(character: Character, vertex: Int)] = []
         var lastMapped: Character?
         for character in word.lowercased() {
             guard let center = keyCenters.centers[character] else { continue }
-            if character == lastMapped { continue }
+            if character == lastMapped {
+                // Collapsed duplicate: its point is the vertex just appended.
+                doubledIndices.append((character: character, vertex: polyline.count - 1))
+                continue
+            }
             polyline.append(center)
             lastMapped = character
         }
 
         guard polyline.count >= 2 else { return nil }
+
+        // Cumulative arc length at each vertex, to place doubled letters as a
+        // fraction of the total (total > 0 since polyline.count >= 2 and the
+        // collapse guarantees consecutive vertices are distinct keys).
+        let total = PathGeometry.arcLength(polyline)
+        var cumulative = [CGFloat](repeating: 0, count: polyline.count)
+        for i in 1..<polyline.count {
+            let dx = polyline[i].x - polyline[i - 1].x
+            let dy = polyline[i].y - polyline[i - 1].y
+            cumulative[i] = cumulative[i - 1] + (dx * dx + dy * dy).squareRoot()
+        }
+        let doubledLetters: [(character: Character, arcFraction: CGFloat)] =
+            doubledIndices.map { entry in
+                (character: entry.character,
+                 arcFraction: total > 0 ? cumulative[entry.vertex] / total : 0)
+            }
 
         let resampledPoints = PathGeometry.resample(polyline, count: resampleCount)
         return SwipeTemplate(
@@ -52,7 +80,8 @@ struct SwipeTemplate {
             polyline: polyline,
             points: resampledPoints,
             normalizedPoints: PathGeometry.normalized(resampledPoints, toSize: 1),
-            idealArcLength: PathGeometry.arcLength(polyline)
+            idealArcLength: total,
+            doubledLetters: doubledLetters
         )
     }
 }

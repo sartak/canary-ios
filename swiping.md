@@ -476,6 +476,100 @@ Debug visualization (`setDebugSwipePath`, debug mode from commits `327f40c`,
 - `lastSwipeKeySequence` debug state in `KeyboardViewController` (path is enough;
   the debug overlay now draws templates instead of required/optional letters)
 
+### 4.10 Double-letter loops
+
+A swipe cannot express a doubled letter — the template collapses "too" to the same
+t→o polyline as "to" (§4.3 rule 2), so the two are geometrically identical and the
+prior alone decides between them (§4.5), always favouring the commoner word. Worse,
+the natural way a user *does* signal a double — the Swype/Gboard convention of
+drawing a small circle on the key ("too" = t→o with a loop on o) — actively hurts:
+the loop's extra arc length and off-template excursion inflate both the shape and
+location distances against the collapsed template. This subsection turns that loop
+from a liability into evidence.
+
+**Detection (`PathGeometry.detectLoops`).** On a lightly resampled copy of the raw
+path (spacing ≈ `loopMaxRadius/3`, for stable direction vectors), slide a window
+accumulating the *signed* turning angle between consecutive segment directions —
+each `atan2` difference wrapped to (−π, π] before it is added, so ordinary
+back-and-forth wobble cancels instead of accruing. Each candidate window grows
+until its points no longer fit within `loopMaxRadius × keyPitch` of their centroid
+(capturing the whole circle, not just its first 270°); if its signed turning
+reaches `loopMinTurn` (~270°) the window is **tightened from the front** — leading
+near-straight segments contribute almost no turn, so they are dropped while the
+window still meets the threshold — and recorded. Without the tightening, up to a
+key-pitch of straight approach path fits inside the radius alongside the circle,
+dragging the centroid onto a neighboring key and the entry position back along the
+path (observed on-device: a loop on o mapped to f at fraction 0.62). Windows that
+never reach the threshold slide forward one segment and rescan; the scan continues
+past each recorded loop, so a word with two doubles ("committee") yields two loops. Results are returned as **arc-length** ranges
+(`arcStart`/`arcEnd`) plus the loop centroid and its arc fraction; arc length is
+invariant between the resampled copy and the original path, which lets the caller
+excise loops without any resampled-to-original index mapping.
+
+**Wiggles (`PathGeometry.detectWiggles`).** A deliberate circle is only one of the
+two natural double-letter gestures. The other is a **wiggle** — a quick
+back-and-forth on the key — and the loop detector is structurally blind to it: it
+accumulates *signed* turning, so the there-and-back cancels to ~0 (the very defense
+that makes wobble harmless). A wiggle needs a second detector keyed not on net turn
+but on **reversal apexes and their leg lengths**. The insight: adjacent keys sit
+≥ 1 key-pitch apart, so every legitimate between-letter path leg is ≥ 1 pitch of
+arc. A reversal whose legs are far below a pitch cannot be letter travel — "did"
+(d→i→d, adjacent keys) reverses with ~1.0-pitch legs, whereas a wiggle on one key
+reverses with ~0.2–0.5-pitch legs. Leg length, not turn shape, disambiguates: a
+window around *any* reversal apex looks locally identical regardless of excursion
+size. The detector resamples finer than `detectLoops` (spacing = `wiggleMinLeg / 2`,
+so a qualifying leg spans several vertices and one wiggle's two apexes never fall on
+adjacent vertices), marks each vertex whose signed turn reaches `wiggleApexTurn`
+(~115°) within at most two consecutive vertex-turns (a hairpin can spread across
+two) as an **apex**, then measures the arc **legs** start→apex₁→…→apexₙ→end. A
+maximal run of apexes joined by interior legs ≤ `wiggleMaxLeg` becomes one wiggle
+iff it has at least one qualifying leg in `[wiggleMinLeg, wiggleMaxLeg]` — an
+interior apex→apex leg, or the leading start→apex leg ("oops") or trailing apex→end
+leg ("too") for the run that touches a path end. A lone reversal whose legs all
+exceed `wiggleMaxLeg` is ordinary lexical travel and yields nothing; legs below
+`wiggleMinLeg` are jitter. Each run emits one `PathLoop` (same shape as
+`detectLoops`, arc positions in the original frame), so excision and matching are
+shared. Constants: `wiggleApexTurn = 2.0` rad, `wiggleMinLeg = 0.12` pitch,
+`wiggleMaxLeg = 0.65` pitch. The decoder merges wiggles into the loop list but
+**drops any wiggle whose arc-range overlaps a detected loop** — a tight circle can
+trip both detectors, and one gesture must never produce two events or two bonuses;
+the loop result wins.
+
+**Excision (`PathGeometry.excising`).** Given the loops' arc-length spans, the
+scoring path drops every original vertex whose cumulative arc length falls inside a
+span and joins the bracketing vertices (which sit close together for a real loop).
+This neutralizes the loop's damage: arc length, resample, normalize, and the
+endpoint-weighted location channel (§4.5) all then see a clean de-looped swipe. If
+removal would leave fewer than two points — the whole path is one big circle — the
+excision is skipped and the decode is treated as having no loops at all (no bonus
+either). When no loop is detected the scoring path is byte-identical to today.
+
+**Matching and bonus (`SwipeDecoder`).** Each loop is mapped to the nearest key
+center within `pruneRadius × keyPitch` (loops over no key are user scribble — the
+range is still excised, but no bonus follows). `SwipeTemplate` now records, per
+word, the character and template arc fraction of every collapsed double
+(`doubledLetters`). Template fractions are loop-free by construction, so the loop's
+position must be measured in the same frame: its **entry arc length on the excised
+path** (earlier excised spans subtracted, normalized by the excised total). The raw
+path's fraction is systematically low — a trailing loop's own circumference inflates
+the denominator, putting a final-letter double at ~0.7 instead of 1.0, outside any
+sane tolerance. For a final decode, a loop matches a candidate's doubled letter
+when the character agrees **and** that adjusted arc fraction is within
+`loopMatchTolerance` of the doubled letter's — a plain `|a−b|`, no wraparound, so a
+leading "ll…" at fraction 0 or a trailing "…ss" at fraction 1 matches normally.
+Each match adds `doubleLetterBonus` (1.0 log unit) to the candidate's log score;
+matched `doubledLetters` entries are consumed so two loops cannot both claim one
+double, and each loop matches at most one entry. Unmatched loops are never
+penalized — excision already removed their geometric cost. The bonus magnitude is
+chosen to beat the to/too prior gap (~0.6 log units at `lmWeight` 0.1, §4.5), so a
+loop reliably flips the decision to the doubled word without steamrolling clearly
+better-traced alternatives.
+
+**Live decodes.** A partial path's loop arc fractions are measured against the
+*partial* arc length, which is not comparable to the template's full-word fractions;
+rather than rescale, live decodes (§4.7) match loops on **character alone** and skip
+the arc-fraction check. Excision still applies identically.
+
 ---
 
 ## 5. Tuning constants — single source of truth
@@ -700,8 +794,12 @@ parallelizable any time after M0 (M4's tests use the fixture DB from M3).
 
 ## 11. Future work (explicitly out of scope, enabled by this design)
 
-- **Dwell/loop detection for double letters** — timestamps are already recorded
-  (`touchPaths` stores `(point, time)`); a dwell feature could bias "too" over "to".
+- **Dwell detection for double letters** — the *loop* half of this is now DONE
+  (§4.10): a small circle on a key excises to protect the score and adds a bonus to
+  candidates that double that letter. *Dwell* (pausing on a key) remains future work
+  — it needs per-point timestamps, and the swipe callbacks (§4.6) carry only
+  `[CGPoint]`, no time. Reinstating `touchPaths`' `(point, time)` through to the
+  decoder would enable biasing "too" over "to" by hesitation as well as by loop.
 - **True frequency counts** — DONE: the prior uses real counts from Norvig's
   `count_1w.txt` (see §4.5); `word_frequencies.txt` turned out to be that list's
   ordering with orthography restored.
