@@ -739,6 +739,20 @@ corrected, for fine-tuning."* This design makes that actionable:
 Implementation of the logging is Milestone 9 scope, not this plan's; the decoder's
 pure-function shape (path in, ranked list out) is what makes replay possible at all.
 
+**Status: the correction log now exists.** `UsageStore` (`Keyboard/UsageStore.swift`)
+writes a local `usage.db` in the keyboard extension's own Application Support
+container — its own database, never the read-only bundled `words.db`, and no Full
+Access required. It is raw SQLite (not the Core Data PLAN.md nominally called for)
+to match the rest of the keyboard's persistence. A `swipe_corrections` row captures
+everything needed to replay a mis-decode: the full touch path (`KeyboardTouchView`
+coordinates), the committed word, the word the user replaced it with, the decoder's
+ranked candidate list, and the geometry it was decoded against (layout name,
+keyboard width/height, key pitch). Tap-typing signals land in `tap_events`
+(autocorrect applied/rejected, suggestion picked), and a `counters` row tracks total
+swipe commits as the denominator for a correction rate. This is logging only — no
+decoding or autocorrect behavior consumes the data yet; feeding it back into the
+tuning grid (§8.3) and eventual personalization remains future work.
+
 ---
 
 ## 10. Milestones

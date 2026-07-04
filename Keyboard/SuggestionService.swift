@@ -29,6 +29,12 @@ class SuggestionService {
     var autocorrectSuggestion: String?
     var autocorrectActions: [InputAction]?
 
+    /// Correction log (Milestone 9). Logging only — no behavior depends on it.
+    weak var usageStore: UsageStore?
+    /// Raw word the user has actually typed (the current prefix), captured on each
+    /// context update so autocorrect events can be logged with what was typed.
+    private(set) var lastTypedWord: String = ""
+
     init?() {
         guard let path = Bundle(for: SuggestionService.self).path(forResource: "words", ofType: "db") else {
             return nil
@@ -124,12 +130,20 @@ class SuggestionService {
         }
     }
 
+    /// Called when the pending autocorrect is actually applied on commit, so the
+    /// signal can be logged (swiping.md §9). Logging only; no behavior change.
+    func noteAutocorrectApplied() {
+        guard let correction = autocorrectSuggestion else { return }
+        usageStore?.recordTapEvent(kind: .autocorrectApplied, typed: lastTypedWord, resolved: correction)
+    }
+
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
         self.contextBefore = before
         self.contextAfter = after
         self.selectedText = selected
 
         let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
+        lastTypedWord = prefix
 
         let frequencies = frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)
 

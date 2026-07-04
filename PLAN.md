@@ -105,11 +105,11 @@
 
 ### Data Storage
 - [ ] Access UILexicon for user's personal dictionary and learned words
-- [ ] Implement local storage system (Core Data)
+- [x] Implement local storage system (SQLite)
 - [ ] Use user dictionary for typeahead and typo correction
 - [ ] Add dictionary management to the main app
 - [ ] Learn a word if it's retyped immediately after an autocorrect of it
-- [ ] Track swipe accuracy based on whether word was corrected, for fine-tuning
+- [x] Track swipe accuracy based on whether word was corrected, for fine-tuning
 - [ ] Add frequency tracking for typed words
 - [ ] Enhance predictions with learned vocabulary
 - [ ] Implement memory pressure response (release caches, unload unused data)

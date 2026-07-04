@@ -31,6 +31,26 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     var autocorrectWordDisabled = false
     var undoActions: [InputAction]?
     private var debugVisualizationEnabled = false
+
+    /// Local usage/correction log (Milestone 9). Logging only — no typing
+    /// behavior changes based on it. Created eagerly (cheap — resolves a path);
+    /// the database opens lazily on the first write.
+    let usageStore = UsageStore()
+    /// Context of the most recent swipe commit, kept alive so a subsequent
+    /// suggestion-bar tap can be logged as a swipe correction. Cleared eagerly
+    /// on any other text-changing action.
+    private var pendingSwipeContext: PendingSwipeContext?
+
+    private struct PendingSwipeContext {
+        let path: [CGPoint]
+        let committed: String
+        /// Decoder's ranked words, committed first.
+        let ranked: [String]
+        let layout: String
+        let keyboardSize: CGSize
+        let keyPitch: CGFloat
+    }
+
     private var lastSwipePath: [CGPoint] = []
     private var lastLiveDecodeTime: CFAbsoluteTime = 0
     private var characterFrequencies: CharacterDistribution?
@@ -484,6 +504,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func handleAlternateSelected(_ alternate: String, from keyData: KeyData) {
+        clearPendingSwipeContext()
         // Handle smart punctuation for alternates
         let textToInsert: String
         if Key.shouldUnspacePunctuation(alternate) && maybePunctuating {
@@ -605,6 +626,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     func willHandleKeyTap() {
         charBeforeCursor = textDocumentProxy.documentContextBeforeInput?.last
         backspaceShiftState = .unshifted
+        // Any physical key tap abandons the just-swiped word for logging purposes.
+        clearPendingSwipeContext()
     }
 
     func handleBackspace() {
@@ -671,6 +694,44 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         deviceLayout.alphaKeyWidth + deviceLayout.horizontalGap
     }
 
+    private var layoutName: String {
+        switch keyboardLayout {
+        case .canary: return "canary"
+        case .qwerty: return "qwerty"
+        }
+    }
+
+    /// Discards the stashed swipe context. Called eagerly whenever the text
+    /// context changes for a reason other than a swipe-replacement tap, so a
+    /// stale swipe is never mislogged as a correction.
+    private func clearPendingSwipeContext() {
+        pendingSwipeContext = nil
+    }
+
+    /// Logs a suggestion-bar tap: a swipe correction when it replaces a
+    /// just-swiped word, otherwise a plain typeahead pick.
+    private func recordSuggestionTap(word: String) {
+        if let context = pendingSwipeContext {
+            if word != context.committed && context.ranked.contains(word) {
+                usageStore?.recordSwipeCorrection(
+                    path: context.path, committed: context.committed, corrected: word,
+                    ranked: context.ranked, layout: context.layout,
+                    keyboardSize: context.keyboardSize, keyPitch: context.keyPitch
+                )
+            }
+        } else {
+            usageStore?.recordTapEvent(kind: .suggestionPicked, typed: suggestionService.lastTypedWord, resolved: word)
+        }
+        clearPendingSwipeContext()
+    }
+
+    /// Logs an autocorrect rejection when the user taps the bar's autocorrect
+    /// preview to opt out (i.e. a pending correction is currently enabled).
+    private func recordAutocorrectRejectionIfNeeded() {
+        guard !autocorrectWordDisabled, let correction = suggestionService.autocorrectSuggestion else { return }
+        usageStore?.recordTapEvent(kind: .autocorrectRejected, typed: suggestionService.lastTypedWord, resolved: correction)
+    }
+
     private func handleSwipeEnded(_ path: [CGPoint]) {
         let shiftState = effectiveShiftState()
         guard let result = suggestionService.decodeSwipe(
@@ -685,6 +746,18 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         executeActions(result.actions)
         autoShift()
 
+        // Milestone 9: count the commit and stash context so a following
+        // suggestion-bar tap can be logged as a swipe correction.
+        usageStore?.recordSwipeCommit()
+        pendingSwipeContext = PendingSwipeContext(
+            path: path,
+            committed: result.word,
+            ranked: [result.word] + result.replacements.map { $0.0 },
+            layout: layoutName,
+            keyboardSize: keyboardTouchView.bounds.size,
+            keyPitch: keyPitch
+        )
+
         // Show replacement suggestions (tapping replaces the inserted word).
         // Replacements already exclude the committed word.
         suggestionView.setSuggestions(typeaheads: result.replacements, autocorrect: nil)
@@ -696,11 +769,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     func switchToLayer(_ layer: Layer) {
+        clearPendingSwipeContext()
         currentLayer = layer
         rebuildKeyboard()
     }
 
     func switchToLayout(_ layout: KeyboardLayout) {
+        clearPendingSwipeContext()
         keyboardLayout = layout
         currentLayer = .alpha
         rebuildKeyboard()
@@ -727,14 +802,18 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private func setupSuggestionView() {
         suggestionView = SuggestionView(deviceLayout: deviceLayout)
         suggestionService.delegate = self
+        suggestionService.usageStore = usageStore
 
-        suggestionView.setOnTypeaheadTapped { [weak self] actions in
-            self?.executeActions(actions)
-            self?.autoShift()
-            self?.refreshSuggestions()
+        suggestionView.setOnTypeaheadTapped { [weak self] word, actions in
+            guard let self = self else { return }
+            self.executeActions(actions)
+            self.autoShift()
+            self.recordSuggestionTap(word: word)
+            self.refreshSuggestions()
         }
 
         suggestionView.setOnAutocorrectToggle { [weak self] in
+            self?.recordAutocorrectRejectionIfNeeded()
             self?.toggleAutocorrectWord()
         }
 

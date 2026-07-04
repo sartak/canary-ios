@@ -124,6 +124,7 @@ class Key {
         } else {
             if let actions = suggestionService.autocorrectActions {
                 executeActions(actions)
+                suggestionService.noteAutocorrectApplied()
             }
         }
     }
@@ -138,6 +139,7 @@ class Key {
                 var combinedActions = autocorrectActions
                 combinedActions.append(.insert(text))
                 executeActions(combinedActions)
+                suggestionService.noteAutocorrectApplied()
             } else {
                 // No autocorrect, just insert the character
                 textDocumentProxy.insertText(text)

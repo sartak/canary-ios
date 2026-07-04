@@ -66,6 +66,7 @@
 				SwipeLexicon.swift,
 				SwipeTemplate.swift,
 				SwipeTuning.swift,
+				UsageStore.swift,
 			);
 			target = 29F087FC2E3923C500B0301D /* CanaryTests */;
 		};

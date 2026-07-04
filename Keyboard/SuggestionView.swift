@@ -4,7 +4,7 @@ class SuggestionView: UIView {
     var deviceLayout: DeviceLayout
 
     private var typeaheads: [(String, [InputAction])] = []
-    private var onTypeaheadTapped: (([InputAction]) -> Void)?
+    private var onTypeaheadTapped: ((String, [InputAction]) -> Void)?
     private var onAutocorrectToggle: (() -> Void)?
 
     private var autocorrectWord: String?
@@ -33,7 +33,7 @@ class SuggestionView: UIView {
         addSubview(scrollView)
     }
 
-    func setOnTypeaheadTapped(_ onTapped: @escaping ([InputAction]) -> Void) {
+    func setOnTypeaheadTapped(_ onTapped: @escaping (String, [InputAction]) -> Void) {
         self.onTypeaheadTapped = onTapped
     }
 
@@ -83,8 +83,8 @@ class SuggestionView: UIView {
     @objc private func typeaheadButtonTapped(_ sender: UIButton) {
         let buttonIndex = sender.tag
         guard buttonIndex < typeaheads.count else { return }
-        let actions = typeaheads[buttonIndex].1
-        onTypeaheadTapped?(actions)
+        let (word, actions) = typeaheads[buttonIndex]
+        onTypeaheadTapped?(word, actions)
     }
 
     @objc private func autocorrectButtonTapped(_ sender: UIButton) {
