@@ -140,6 +140,9 @@ def create_database_tables(conn: sqlite3.Connection):
             frequency_rank INTEGER NOT NULL,
             word TEXT NOT NULL,
             hidden INTEGER NOT NULL DEFAULT 0,
+            first_char TEXT NOT NULL DEFAULT '',
+            last_char TEXT NOT NULL DEFAULT '',
+            distinct_key_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (word_lower, frequency_rank)
         ) WITHOUT ROWID
     ''')
@@ -205,6 +208,9 @@ def create_database_tables(conn: sqlite3.Connection):
     # Covering index for eliminating JOIN - everything needed is in the index
     conn.execute('CREATE INDEX idx_symspell_covering ON symspell_deletes (delete_hash, frequency_rank, word)')
 
+    # Covering index for swipe candidate pruning by first/last letter (swiping.md §4.4)
+    conn.execute('CREATE INDEX idx_words_swipe ON words (first_char, last_char, frequency_rank, word, hidden, distinct_key_count)')
+
     conn.commit()
 
 
@@ -239,6 +245,20 @@ def populate_prefixes_table(conn: sqlite3.Connection, filtered_words: List[Tuple
     print(f"Populated prefixes table with {len(prefixes_data)} prefix entries (capped at 20 visible per prefix)")
 
 
+def swipe_columns(word_lower: str) -> Tuple[str, str, int]:
+    """First/last letter and distinct-key count of the letters-only form.
+
+    Must match SwipeTemplate's construction rules (swiping.md §4.3/§4.4):
+    non a-z characters are dropped, then consecutive duplicate letters
+    collapse. Words with fewer than 2 distinct keys are not swipe-decodable.
+    """
+    letters = re.sub(r'[^a-z]', '', word_lower)
+    if not letters:
+        return ('', '', 0)
+    distinct_key_count = 1 + sum(1 for i in range(1, len(letters)) if letters[i] != letters[i - 1])
+    return (letters[0], letters[-1], distinct_key_count)
+
+
 def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, int]], hidden_words: Set[str]):
     """Populate the database tables with filtered words."""
     print("Populating database tables...")
@@ -250,16 +270,20 @@ def populate_database(conn: sqlite3.Connection, filtered_words: List[Tuple[str, 
         word_lower = word.lower()
         word_lower_reversed = word_lower[::-1]
         is_hidden = 1 if word_lower in hidden_words else 0
+        first_char, last_char, distinct_key_count = swipe_columns(word_lower)
 
         # Data for words table
-        words_data.append((word_lower, word_lower_reversed, rank, word, is_hidden))
+        words_data.append((word_lower, word_lower_reversed, rank, word, is_hidden,
+                           first_char, last_char, distinct_key_count))
 
         # Data for words_by_suffix table
         words_by_suffix_data.append((word_lower_reversed, rank, word, word_lower, is_hidden))
 
     # Batch insert for performance
     conn.executemany(
-        'INSERT INTO words (word_lower, word_lower_reversed, frequency_rank, word, hidden) VALUES (?, ?, ?, ?, ?)',
+        '''INSERT INTO words (word_lower, word_lower_reversed, frequency_rank, word, hidden,
+                              first_char, last_char, distinct_key_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
         words_data
     )
 
