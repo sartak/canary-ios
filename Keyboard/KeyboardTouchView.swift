@@ -40,6 +40,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     var onNeedsKeyData: (() -> Void)?
     private var lastLayoutWidth: CGFloat = 0
     private var debugSwipePath: [CGPoint] = []
+    private var debugTemplatePaths: [[CGPoint]] = []
 
     // Multi-touch gesture recognizer
     private(set) var gestureRecognizer: MultiTouchKeyboardGestureRecognizer!
@@ -177,8 +178,14 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
         setNeedsDisplay()
     }
 
+    func setDebugTemplatePaths(_ paths: [[CGPoint]]) {
+        debugTemplatePaths = paths
+        setNeedsDisplay()
+    }
+
     func clearDebugSwipePath() {
         debugSwipePath.removeAll()
+        debugTemplatePaths.removeAll()
         setNeedsDisplay()
     }
 
@@ -300,13 +307,8 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     continue
                 }
 
-                let isRequiredSwipeKey = showDebugSwipePath && (key.key.simpleCharacter.map { char in
-                    gestureRecognizer.swipeKeySequence.contains { $0.isRequired && $0.character == Character(char.lowercased()) }
-                } ?? false)
-                let hitboxColor = isRequiredSwipeKey ? UIColor.systemYellow.withAlphaComponent(0.5) : key.debugColor
-
                 let debugContext = UIGraphicsGetCurrentContext()
-                debugContext?.setFillColor(hitboxColor.cgColor)
+                debugContext?.setFillColor(key.debugColor.cgColor)
                 debugContext?.fill(key.hitbox)
             }
         }
@@ -322,6 +324,20 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                 }
                 bezier.lineWidth = 3
                 UIColor.black.setStroke()
+                bezier.stroke()
+            }
+
+            // Overlay the top candidates' ideal template polylines, one color
+            // per rank (swiping.md §8.4).
+            let templateColors: [UIColor] = [.systemGreen, .systemOrange, .systemPurple]
+            for (rank, template) in debugTemplatePaths.enumerated() where template.count >= 2 {
+                let bezier = UIBezierPath()
+                bezier.move(to: template[0])
+                for point in template.dropFirst() {
+                    bezier.addLine(to: point)
+                }
+                bezier.lineWidth = 1.5
+                templateColors[rank % templateColors.count].withAlphaComponent(0.8).setStroke()
                 bezier.stroke()
             }
         } else {

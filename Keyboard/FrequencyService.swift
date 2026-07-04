@@ -163,23 +163,4 @@ class FrequencyService {
 
         return FrequencyService.generalDistribution
     }
-
-    func distributionForSwipeContext(_ context: String) -> CharacterDistribution {
-        let lowercased = context.lowercased()
-
-        if lowercased.count >= 2 {
-            let lastTwo = String(lowercased.suffix(2))
-            if let distribution = loadTrigramDistribution(prefix: lastTwo) {
-                return distribution
-            }
-        }
-
-        if let lastChar = lowercased.last {
-            if let distribution = loadBigramDistribution(prefix: String(lastChar)) {
-                return distribution
-            }
-        }
-
-        return FrequencyService.generalDistribution
-    }
 }

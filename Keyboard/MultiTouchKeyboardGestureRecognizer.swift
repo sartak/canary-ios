@@ -22,8 +22,13 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     var onAlternatesDismiss: (() -> Void)?
     var onSwipeStarted: ((KeyData) -> Void)?
     var onSwipePathUpdated: (() -> Void)?
-    var onSwipeKeySequenceChanged: (([SwipeKey]) -> Void)?
-    var onSwipeEnded: (([SwipeKey], [CGPoint]) -> Void)?
+    /// Fired on every touchesMoved for an already-swiping touch, and once at the
+    /// moment a touch transitions into swiping (so the callback sees the
+    /// pre-threshold points recorded since touch-down). Throttling is the
+    /// controller's job. Payload: the full path recorded so far.
+    var onSwipeProgressed: (([CGPoint]) -> Void)?
+    /// Fired on touch-up with the full path from touch-down to touch-up.
+    var onSwipeEnded: (([CGPoint]) -> Void)?
 
     // Multi-touch support - same as original implementation
     private var touchQueue: [(UITouch, KeyData)] = []
@@ -35,17 +40,8 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private var fadingPaths: [[(point: CGPoint, time: Date)]] = []
     private var swipeAnimationTimer: Timer?
     private let tailDuration: TimeInterval = 0.5
-    private(set) var swipeKeySequence: [SwipeKey] = []
-    private var swipeKeyPositions: [CGPoint] = []
     var deviceLayout: DeviceLayout?
     var swipeEnabled: Bool = true
-
-    func setSwipeKeySequence(_ sequence: [SwipeKey]) {
-        swipeKeySequence = sequence
-    }
-
-    /// Angle change threshold (in radians) for promoting a key to required
-    private let angleChangeThreshold: CGFloat = .pi / 3  // 60 degrees
 
     // Long press support
     private var longPressTimers: [UITouch: Timer] = [:]
@@ -86,9 +82,6 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
-
-        swipeKeySequence.removeAll()
-        swipeKeyPositions.removeAll()
 
         for touch in touches {
             // Ignore new touches while alternates are active
@@ -136,14 +129,16 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                     swipingTouches.insert(touch)
                     startSwipeAnimationTimer()
                     cancelLongPressTimer(for: touch)
-                    initializeSwipeKeySequence(for: touch)
                     if let (_, key) = touchQueue.first(where: { $0.0 === touch }) {
                         pressedKeys.remove(key.index)
                         onSwipeStarted?(key)
                     }
+                    // Emit the pre-threshold points recorded since touch-down so
+                    // the decoder sees the true start of the gesture.
+                    onSwipeProgressed?(touchPaths[touch]?.map(\.point) ?? [])
                 }
             } else if swipingTouches.contains(touch) {
-                appendKeyToSequenceIfNew(at: location)
+                onSwipeProgressed?(touchPaths[touch]?.map(\.point) ?? [])
             }
         }
     }
@@ -166,10 +161,9 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
                 cancelLongPressTimer(for: touch)
                 let wasSwiping = swipingTouches.contains(touch)
                 if wasSwiping {
-                    // Swipe ended - finalize sequence and invoke callback
-                    swipeKeySequence = finalizeSwipeKeySequence()
+                    // Swipe ended - invoke callback with the full path
                     let pathPoints = touchPaths[touch]?.map(\.point) ?? []
-                    onSwipeEnded?(swipeKeySequence, pathPoints)
+                    onSwipeEnded?(pathPoints)
                     if let path = touchPaths[touch] {
                         fadingPaths.append(path)
                     }
@@ -240,8 +234,6 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
         pressedKeys.removeAll()
         touchPaths.removeAll()
         swipingTouches.removeAll()
-        // Note: swipeKeySequence is intentionally NOT cleared here - it persists for debug visualization
-        // until the next touchesBegan
         cancelAllLongPressTimers()
 
         // Clear alternates state
@@ -335,74 +327,5 @@ class MultiTouchKeyboardGestureRecognizer: UIGestureRecognizer {
     private func stopSwipeAnimationTimer() {
         swipeAnimationTimer?.invalidate()
         swipeAnimationTimer = nil
-    }
-
-    private func initializeSwipeKeySequence(for touch: UITouch) {
-        swipeKeySequence.removeAll()
-        swipeKeyPositions.removeAll()
-        guard let path = touchPaths[touch] else { return }
-
-        for entry in path {
-            appendKeyToSequenceIfNew(at: entry.point, notify: false)
-        }
-
-        if !swipeKeySequence.isEmpty {
-            onSwipeKeySequenceChanged?(swipeKeySequence)
-        }
-    }
-
-    private func appendKeyToSequenceIfNew(at point: CGPoint, notify: Bool = true) {
-        guard let key = hitTestDelegate?.gestureRecognizer(self, keyAt: point),
-              case .simple(let char) = key.key.keyType,
-              let firstChar = char.lowercased().first else {
-            return
-        }
-
-        // Check if this is a different key than the last one
-        if swipeKeySequence.last?.character == firstChar {
-            return
-        }
-
-        // Check for significant angle change and promote previous key if needed
-        if swipeKeyPositions.count >= 2 {
-            let prevPrev = swipeKeyPositions[swipeKeyPositions.count - 2]
-            let prev = swipeKeyPositions[swipeKeyPositions.count - 1]
-
-            let dir1 = CGPoint(x: prev.x - prevPrev.x, y: prev.y - prevPrev.y)
-            let dir2 = CGPoint(x: point.x - prev.x, y: point.y - prev.y)
-
-            let angle1 = atan2(dir1.y, dir1.x)
-            let angle2 = atan2(dir2.y, dir2.x)
-            var angleDiff = abs(angle2 - angle1)
-            if angleDiff > .pi {
-                angleDiff = 2 * .pi - angleDiff
-            }
-
-            if angleDiff >= angleChangeThreshold {
-                let lastIndex = swipeKeySequence.count - 1
-                if case .optional(let c) = swipeKeySequence[lastIndex] {
-                    swipeKeySequence[lastIndex] = .required(c)
-                }
-            }
-        }
-
-        let swipeKey: SwipeKey = swipeKeySequence.isEmpty ? .required(firstChar) : .optional(firstChar)
-        swipeKeySequence.append(swipeKey)
-        swipeKeyPositions.append(point)
-        if notify {
-            onSwipeKeySequenceChanged?(swipeKeySequence)
-        }
-    }
-
-    private func finalizeSwipeKeySequence() -> [SwipeKey] {
-        guard swipeKeySequence.count >= 2 else { return swipeKeySequence }
-
-        // Change last entry to required
-        var finalSequence = swipeKeySequence
-        let lastIndex = finalSequence.count - 1
-        if case .optional(let char) = finalSequence[lastIndex] {
-            finalSequence[lastIndex] = .required(char)
-        }
-        return finalSequence
     }
 }

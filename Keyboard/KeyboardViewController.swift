@@ -32,7 +32,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     var undoActions: [InputAction]?
     private var debugVisualizationEnabled = false
     private var lastSwipePath: [CGPoint] = []
-    private var lastSwipeKeySequence: [SwipeKey] = []
+    private var lastLiveDecodeTime: CFAbsoluteTime = 0
     private var characterFrequencies: CharacterDistribution?
     private var charBeforeCursor: Character?
     private var backspaceShiftState: ShiftState = .unshifted
@@ -117,7 +117,6 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
         if debugVisualizationEnabled {
             keyboardTouchView.setDebugSwipePath(lastSwipePath)
-            keyboardTouchView.gestureRecognizer.setSwipeKeySequence(lastSwipeKeySequence)
         }
         keyboardTouchView.characterFrequencies = characterFrequencies
         keyboardTouchView.keyData = createKeyData()
@@ -162,7 +161,6 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
         keyboardTouchView.gestureRecognizer.onSwipeStarted = { [weak self] keyData in
             self?.lastSwipePath.removeAll()
-            self?.lastSwipeKeySequence.removeAll()
             self?.restoreKeyDisplay(for: keyData)
         }
 
@@ -177,25 +175,29 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             self.keyboardTouchView.setNeedsDisplay()
         }
 
-        keyboardTouchView.gestureRecognizer.onSwipeKeySequenceChanged = { [weak self] keySequence in
-            guard let self = self, !keySequence.isEmpty else { return }
-            let suggestions = self.suggestionService.swipeSuggestions(keySequence: keySequence, shiftState: self.effectiveShiftState())
-            self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
+        keyboardTouchView.gestureRecognizer.onSwipeProgressed = { [weak self] path in
+            guard let self = self, !path.isEmpty else { return }
+            // Throttle live decodes; the path array is always read fresh.
+            let now = CFAbsoluteTimeGetCurrent()
+            guard now - self.lastLiveDecodeTime >= SwipeTuning.liveDecodeInterval else { return }
+            self.lastLiveDecodeTime = now
 
-            let frequencies = self.suggestionService.swipeFrequencies(keySequence: keySequence)
-            self.characterFrequencies = frequencies
-            self.keyboardTouchView.characterFrequencies = frequencies
-            self.updateKeyHitboxes()
+            let suggestions = self.suggestionService.liveSwipeSuggestions(
+                path: path,
+                keyCenters: self.currentKeyCenters(),
+                keyPitch: self.keyPitch,
+                shiftState: self.effectiveShiftState()
+            )
+            self.suggestionView.setSuggestions(typeaheads: suggestions, autocorrect: nil)
         }
 
-        keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] keySequence, pathPoints in
+        keyboardTouchView.gestureRecognizer.onSwipeEnded = { [weak self] pathPoints in
             guard let self = self else { return }
             self.lastSwipePath = pathPoints
-            self.lastSwipeKeySequence = keySequence
             if self.keyboardTouchView.showHitboxDebug {
                 self.keyboardTouchView.setDebugSwipePath(pathPoints)
             }
-            self.handleSwipeEnded(keySequence)
+            self.handleSwipeEnded(pathPoints)
         }
 
         keyboardTouchView.onNeedsKeyData = { [weak self] in
@@ -651,18 +653,30 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         updateKeyboardForShiftChange()
     }
 
-    private func handleSwipeEnded(_ keySequence: [SwipeKey]) {
-        // Restore normal frequencies after swipe ends
-        let before = textDocumentProxy.documentContextBeforeInput
-        let after = textDocumentProxy.documentContextAfterInput
-        let frequencies = suggestionService.frequenciesForContext(before: before, after: after)
-        characterFrequencies = frequencies
-        keyboardTouchView?.characterFrequencies = frequencies
-        updateKeyHitboxes()
+    /// Key centers of the CURRENT key layout's simple-character keys, keyed by
+    /// the key's lowercased character. Swipes are only enabled on the alpha
+    /// layer, so the current keyData is the alpha layer whenever this runs.
+    private func currentKeyCenters() -> KeyCenters {
+        var centers: [Character: CGPoint] = [:]
+        for keyData in keyboardTouchView.keyData {
+            guard let character = keyData.key.simpleCharacter,
+                  let lowered = character.lowercased().first else { continue }
+            let frame = keyData.viewFrame
+            centers[lowered] = CGPoint(x: frame.midX, y: frame.midY)
+        }
+        return KeyCenters(centers: centers)
+    }
 
+    private var keyPitch: CGFloat {
+        deviceLayout.alphaKeyWidth + deviceLayout.horizontalGap
+    }
+
+    private func handleSwipeEnded(_ path: [CGPoint]) {
         let shiftState = effectiveShiftState()
         guard let result = suggestionService.decodeSwipe(
-            keySequence: keySequence,
+            path: path,
+            keyCenters: currentKeyCenters(),
+            keyPitch: keyPitch,
             shiftState: shiftState
         ) else {
             return
@@ -671,14 +685,14 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         executeActions(result.actions)
         autoShift()
 
-        // Show replacement suggestions (tapping replaces the inserted word)
-        let insertedLength = result.word.count + 1 // +1 for trailing space
-        let replacements = suggestionService.swipeReplacements(
-            keySequence: keySequence,
-            shiftState: shiftState,
-            replaceLength: insertedLength
-        )
-        suggestionView.setSuggestions(typeaheads: Array(replacements.dropFirst()), autocorrect: nil)
+        // Show replacement suggestions (tapping replaces the inserted word).
+        // Replacements already exclude the committed word.
+        suggestionView.setSuggestions(typeaheads: result.replacements, autocorrect: nil)
+
+        // Debug overlay: draw the top candidates' ideal template polylines.
+        if keyboardTouchView.showDebugSwipePath {
+            keyboardTouchView.setDebugTemplatePaths(result.debugTemplatePaths)
+        }
     }
 
     func switchToLayer(_ layer: Layer) {
@@ -930,7 +944,6 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             suggestionView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
             if debugVisualizationEnabled {
                 keyboardTouchView?.setDebugSwipePath(lastSwipePath)
-                keyboardTouchView?.gestureRecognizer.setSwipeKeySequence(lastSwipeKeySequence)
             }
             keyboardTouchView?.setNeedsDisplay()
         }

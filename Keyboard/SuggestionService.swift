@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import SQLite3
 
@@ -21,7 +22,7 @@ class SuggestionService {
 
     private var typeaheadService: TypeaheadService
     private var frequencyService: FrequencyService
-    private var swipeService: SwipeService
+    private var swipeDecoder: SwipeDecoder
 
     private var autocorrectService: AutocorrectService
     private let db: OpaquePointer
@@ -49,8 +50,7 @@ class SuggestionService {
 
         let autocorrectService = AutocorrectService(db: db)
         guard let typeaheadService = TypeaheadService(db: db),
-              let frequencyService = FrequencyService(db: db),
-              let swipeService = SwipeService(db: db) else {
+              let frequencyService = FrequencyService(db: db) else {
             sqlite3_close(db)
             return nil
         }
@@ -58,52 +58,70 @@ class SuggestionService {
         self.autocorrectService = autocorrectService
         self.typeaheadService = typeaheadService
         self.frequencyService = frequencyService
-        self.swipeService = swipeService
+        self.swipeDecoder = SwipeDecoder(lexicon: SwipeLexicon(db: db))
     }
 
     deinit {
         sqlite3_close(db)
     }
 
-    func decodeSwipe(keySequence: [SwipeKey], shiftState: ShiftState) -> (word: String, actions: [InputAction])? {
-        guard let word = swipeService.decode(keySequence: keySequence) else {
-            return nil
-        }
-
-        let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
-        let actions: [InputAction] = [.insert(capitalizedWord + " "), .maybePunctuating(true)]
-        return (capitalizedWord, actions)
+    struct SwipeDecodeResult {
+        /// Capitalized word that was committed.
+        let word: String
+        /// Actions that insert the word (word + trailing space + maybePunctuating).
+        let actions: [InputAction]
+        /// Tap-to-replace alternatives, committed word excluded: each deletes the
+        /// inserted word (word.count + 1 including trailing space) and inserts itself.
+        let replacements: [(String, [InputAction])]
+        /// Top-ranked candidates' ideal polylines for the debug overlay (max 3).
+        let debugTemplatePaths: [[CGPoint]]
     }
 
-    func swipeSuggestions(keySequence: [SwipeKey], shiftState: ShiftState) -> [(String, [InputAction])] {
-        swipeService.candidates(keySequence: keySequence).map { word in
-            let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+    /// Single decode on touch-up: commit actions and replacement suggestions come
+    /// from one ranked list (swiping.md §4.8). Returns nil when the decoder
+    /// rejects the swipe.
+    func decodeSwipe(path: [CGPoint], keyCenters: KeyCenters, keyPitch: CGFloat,
+                     shiftState: ShiftState) -> SwipeDecodeResult? {
+        guard !path.isEmpty else { return nil }
+
+        let candidates = swipeDecoder.decode(path: path, keyCenters: keyCenters, keyPitch: keyPitch)
+        guard let best = candidates.first else { return nil }
+
+        let committedWord = applySmartCapitalization(word: best.word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+        let actions: [InputAction] = [.insert(committedWord + " "), .maybePunctuating(true)]
+
+        // Replacements: every candidate except the committed one. Each deletes the
+        // inserted word plus its trailing space, then inserts itself.
+        let replaceLength = committedWord.count + 1
+        let replacements: [(String, [InputAction])] = candidates.dropFirst().map { candidate in
+            let capitalizedWord = applySmartCapitalization(word: candidate.word, userPrefix: "", userSuffix: "", shiftState: shiftState)
+            var replaceActions: [InputAction] = []
+            for _ in 0..<replaceLength {
+                replaceActions.append(.deleteBackward)
+            }
+            replaceActions.append(.insert(capitalizedWord + " "))
+            replaceActions.append(.maybePunctuating(true))
+            return (capitalizedWord, replaceActions)
+        }
+
+        // Debug overlay: the ideal polylines of the top ≤3 candidates. SwipeCandidate
+        // doesn't carry the template, so rebuild them locally.
+        let debugTemplatePaths: [[CGPoint]] = candidates.prefix(3).compactMap { candidate in
+            SwipeTemplate.make(word: candidate.word, keyCenters: keyCenters)?.polyline
+        }
+
+        return SwipeDecodeResult(word: committedWord, actions: actions,
+                                 replacements: replacements, debugTemplatePaths: debugTemplatePaths)
+    }
+
+    /// Mid-swipe candidates for the suggestion bar.
+    func liveSwipeSuggestions(path: [CGPoint], keyCenters: KeyCenters, keyPitch: CGFloat,
+                              shiftState: ShiftState) -> [(String, [InputAction])] {
+        swipeDecoder.liveCandidates(path: path, keyCenters: keyCenters, keyPitch: keyPitch).map { candidate in
+            let capitalizedWord = applySmartCapitalization(word: candidate.word, userPrefix: "", userSuffix: "", shiftState: shiftState)
             let actions: [InputAction] = [.insert(capitalizedWord + " "), .maybePunctuating(true)]
             return (capitalizedWord, actions)
         }
-    }
-
-    func swipeReplacements(keySequence: [SwipeKey], shiftState: ShiftState, replaceLength: Int) -> [(String, [InputAction])] {
-        swipeService.finalCandidates(keySequence: keySequence).map { word in
-            let capitalizedWord = applySmartCapitalization(word: word, userPrefix: "", userSuffix: "", shiftState: shiftState)
-            var actions: [InputAction] = []
-            for _ in 0..<replaceLength {
-                actions.append(.deleteBackward)
-            }
-            actions.append(.insert(capitalizedWord + " "))
-            actions.append(.maybePunctuating(true))
-            return (capitalizedWord, actions)
-        }
-    }
-
-    func swipeFrequencies(keySequence: [SwipeKey]) -> CharacterDistribution {
-        let context = String(keySequence.filter(\.isRequired).map(\.character))
-        return frequencyService.distributionForSwipeContext(context)
-    }
-
-    func frequenciesForContext(before: String?, after: String?) -> CharacterDistribution {
-        let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
-        return frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)
     }
 
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
