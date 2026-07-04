@@ -58,6 +58,17 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		54D2F37274F456F5DEF29B17 /* Exceptions for "Keyboard" folder in "CanaryTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				PathGeometry.swift,
+				SwipeDecoder.swift,
+				SwipeLexicon.swift,
+				SwipeTemplate.swift,
+				SwipeTuning.swift,
+			);
+			target = 29F087FC2E3923C500B0301D /* CanaryTests */;
+		};
 		298BE5CA2E39299800D66C92 /* Exceptions for "Keyboard" folder in "Keyboard" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -79,6 +90,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				298BE5CA2E39299800D66C92 /* Exceptions for "Keyboard" folder in "Keyboard" target */,
+				54D2F37274F456F5DEF29B17 /* Exceptions for "Keyboard" folder in "CanaryTests" target */,
 			);
 			path = Keyboard;
 			sourceTree = "<group>";
