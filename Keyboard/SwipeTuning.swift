@@ -34,16 +34,23 @@ enum SwipeTuning {
     static let lengthRatioLimit: CGFloat = 2.2
 
     /// Gaussian sigma for the shape channel, in normalized-bounding-box units.
-    static let sigmaShape: CGFloat = 0.35
+    /// On-device traces score xs <= ~0.1 even for wrong-but-similar words, so
+    /// 0.35 left the channel nearly flat.
+    static let sigmaShape: CGFloat = 0.25
 
-    /// Gaussian sigma for the location channel, in key-pitch units.
-    static let sigmaLocation: CGFloat = 0.8
+    /// Gaussian sigma for the location channel, in key-pitch units. Sharpened
+    /// twice from 0.8 on on-device evidence: the true word consistently shows
+    /// a decisively lower x_l than frequent impostors (0.39 vs 1.09; 0.77 vs
+    /// 0.99), and this channel must convert that into rank.
+    static let sigmaLocation: CGFloat = 0.5
 
     /// Exponent on the word prior (gamma): 0 ignores frequency, 1 lets it
-    /// steamroll geometry. At 0.4 a 500x rank advantage was worth ~2.5 log
-    /// units — more than accurate tracing could overcome — and common words
-    /// overmatched; 0.2 halves that.
-    static let lmWeight: Double = 0.2
+    /// steamroll geometry. Lowered twice (0.4 → 0.2 → 0.1) on on-device
+    /// evidence of common words outvoting clear geometric verdicts; at 0.1
+    /// the prior still decides identical-template pairs (to/too) and is worth
+    /// ~0.7 log units across a 1000x rank gap, but no longer beats a
+    /// well-traced rarer word.
+    static let lmWeight: Double = 0.1
 
     /// Location-channel weight at the middle of the path; endpoints get 1.0
     /// with a linear ramp between.

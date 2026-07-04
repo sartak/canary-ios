@@ -325,21 +325,23 @@ uses the same idea; the exact ramp is a tunable, `SwipeTuning.midPathWeight`.)
 score(w) = exp(−x_s² / (2σ_s²)) · exp(−x_l² / (2σ_l²)) · P(w)^γ
 ```
 
-- `σ_s` default **0.35** (shape distances are in normalized-box units; a clean
-  trace of the right word lands around 0.1–0.2, a wrong-but-similar word 0.4+.
-  Validated by the synthetic harness in §8.3 before shipping.)
-- `σ_l` default **0.8** key-pitches (a whole-key parallel drift costs ~1.0; this
-  keeps such a swipe alive but penalized).
+- `σ_s` default **0.25** (shape distances are in normalized-box units. On-device
+  traces score lower than the pre-ship guess assumed — a clean trace lands under
+  0.05 and wrong-but-similar words around 0.1 — so the original 0.35 left the
+  channel nearly flat.)
+- `σ_l` default **0.5** key-pitches (a whole-key parallel drift costs ~2.0.
+  Sharpened twice from 0.8 on on-device data: the true word consistently shows
+  a decisively lower x_l than frequent impostors, and this channel has to
+  convert that into rank.)
 - `P(w)`: Zipf approximation from the existing `frequency_rank`
   (`P(w) ∝ 1 / rank`, normalized by the harmonic number H₈₉₄₀₄ ≈ 12.0). No schema
   change needed; if we later want true counts, `corpus/word_frequencies.txt`
   already has them and this is a one-column addition.
-- `γ` default **0.2**: the LM-vs-geometry balance. γ=1 lets frequency steamroll
+- `γ` default **0.1**: the LM-vs-geometry balance. γ=1 lets frequency steamroll
   geometry (the current design's failure mode, inverted); γ=0 ignores frequency.
-  This is the single most user-feelable knob; the harness (§8.3) picks the default,
-  the debug overlay (§8.4) sanity-checks it on-device. (Initially shipped at 0.4;
-  on-device testing showed common words overmatching — a 500× rank advantage was
-  worth ~2.5 log units, more than accurate tracing could recover.)
+  This is the single most user-feelable knob, tuned twice on-device (0.4 → 0.2
+  → 0.1): common words kept outvoting clear geometric verdicts. The prior still
+  decides identical-template pairs (to/too) at any γ, since geometry ties.
 
 Work in log space to avoid underflow:
 
@@ -481,9 +483,9 @@ struct SwipeTuning {
     static let maxCandidates = 1500          // SQL LIMIT, final decode
     static let liveCandidates = 300          // SQL LIMIT, mid-swipe decode
     static let lengthRatioLimit: CGFloat = 2.2
-    static let sigmaShape: CGFloat = 0.35    // normalized-box units
-    static let sigmaLocation: CGFloat = 0.8  // key-pitch units
-    static let lmWeight: Double = 0.2        // γ
+    static let sigmaShape: CGFloat = 0.25    // normalized-box units
+    static let sigmaLocation: CGFloat = 0.5  // key-pitch units
+    static let lmWeight: Double = 0.1        // γ
     static let midPathWeight: CGFloat = 0.4  // α at path middle (ends are 1.0)
     static let rejectShape: CGFloat = 0.9    // gate: BOTH must exceed to reject
     static let rejectLocation: CGFloat = 2.5

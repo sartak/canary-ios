@@ -92,6 +92,9 @@ final class SwipeDecoder {
                                      limit: limit, live: false)
 
         let duration = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
+        logDecodeBreakdown(ranked, startLetters: startLetters, endLetters: endLetters,
+                           userArcLength: userArcLength, keyPitch: keyPitch,
+                           candidates: entries.count, skipped: skipped, duration: duration)
 
         // Confidence gate: reject only when the best candidate is far in BOTH
         // channels — a wildly wrong insertion is worse than none.
@@ -99,13 +102,10 @@ final class SwipeDecoder {
            best.shapeDistance > SwipeTuning.rejectShape,
            best.locationDistance > SwipeTuning.rejectLocation {
             print("SwipeDecoder: rejected '\(best.word)' " +
-                  "x_s=\(dist(best.shapeDistance)) x_l=\(dist(best.locationDistance)) " +
-                  "(\(entries.count) candidates, \(skipped) skipped) in \(ms(duration))ms")
+                  "x_s=\(dist(best.shapeDistance)) x_l=\(dist(best.locationDistance))")
             return []
         }
 
-        logRanked(ranked, prefix: "SwipeDecoder", candidates: entries.count,
-                  skipped: skipped, duration: duration)
         return ranked
     }
 
@@ -241,6 +241,32 @@ final class SwipeDecoder {
     }
 
     // MARK: - Diagnostics
+
+    /// Per-candidate scoring breakdown for final decodes, for tuning from the
+    /// console: which stage lost the intended word (absent from the top 5 →
+    /// pruning; present but beaten → the term in parentheses that lost it).
+    private func logDecodeBreakdown(_ ranked: [SwipeCandidate],
+                                    startLetters: Set<Character>, endLetters: Set<Character>,
+                                    userArcLength: CGFloat, keyPitch: CGFloat,
+                                    candidates: Int, skipped: Int, duration: Double) {
+        let pitches = Double(userArcLength / keyPitch)
+        print("SwipeDecoder: start={\(String(startLetters.sorted()))} " +
+              "end={\(String(endLetters.sorted()))} " +
+              "len=\(String(format: "%.1f", pitches)) pitches, " +
+              "\(candidates) candidates, \(skipped) skipped, in \(ms(duration))ms")
+        for (index, candidate) in ranked.prefix(5).enumerated() {
+            let shapeTerm = -Double(candidate.shapeDistance * candidate.shapeDistance)
+                / (2 * Self.sigmaShapeSq)
+            let locationTerm = -Double(candidate.locationDistance * candidate.locationDistance)
+                / (2 * Self.sigmaLocationSq)
+            let priorTerm = candidate.logScore - shapeTerm - locationTerm
+            print(String(format: "SwipeDecoder:   %d. '%@' xs=%.2f (%+.2f) xl=%.2f (%+.2f) prior (%+.2f) = %+.2f",
+                         index + 1, candidate.word,
+                         Double(candidate.shapeDistance), shapeTerm,
+                         Double(candidate.locationDistance), locationTerm,
+                         priorTerm, candidate.logScore))
+        }
+    }
 
     private func logRanked(_ ranked: [SwipeCandidate], prefix: String,
                            candidates: Int, skipped: Int, duration: Double) {
