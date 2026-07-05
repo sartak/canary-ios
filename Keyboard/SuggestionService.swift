@@ -354,7 +354,16 @@ class SuggestionService {
             if lhs.learned { return lhs.personalCount > rhs.personalCount }
             return lhs.frequencyRank < rhs.frequencyRank
         }
-        return candidates.prefix(limit).map { ($0.word, $0.learned) }
+
+        // A word can reach here from both sources when a corpus update adds a
+        // previously-learned word; keep only its best-ranked appearance.
+        var seen: Set<String> = []
+        var deduped: [(word: String, learned: Bool)] = []
+        for candidate in candidates where seen.insert(candidate.word.lowercased()).inserted {
+            deduped.append((candidate.word, candidate.learned))
+            if deduped.count == limit { break }
+        }
+        return deduped
     }
 
     /// Physical plausibility of mistyping `candidate` as `typed`. Computable
