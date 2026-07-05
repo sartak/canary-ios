@@ -72,6 +72,21 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         view.window!.windowScene!.screen
     }
 
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        // iOS-provided personal vocabulary (contact names, single-word text
+        // replacements) joins the personal dictionary for this session. iOS
+        // owns the source, so it is re-fetched each launch, never persisted.
+        // The completion can arrive off the main queue.
+        requestSupplementaryLexicon { [weak self] lexicon in
+            let words = lexicon.entries.map { $0.documentText }
+            DispatchQueue.main.async {
+                self?.suggestionService.setSupplementaryLexicon(words: words)
+            }
+        }
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
 

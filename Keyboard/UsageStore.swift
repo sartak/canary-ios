@@ -71,6 +71,12 @@ final class UsageStore {
     /// Learned words keyed by lowercased word → last-seen original casing,
     /// loaded once from `learned_words` and kept in sync by `markLearned`.
     private var learned: [String: String]?
+    /// iOS-provided words for this session (UILexicon), lowercased → provided
+    /// casing. In-memory only; see setExternalWords.
+    private var externalWords: [String: String] = [:]
+
+    /// Upper bound on session words accepted from UILexicon.
+    private static let externalWordCap = 2000
 
     /// Resolves the on-disk path; does NOT open the database yet.
     init?() {
@@ -285,18 +291,47 @@ final class UsageStore {
         }
     }
 
+    /// Whether the personal dictionary knows this word — learned from typing
+    /// or supplied by iOS for this session.
     func isLearned(_ wordLower: String) -> Bool {
-        loadLearned()[wordLower] != nil
+        loadLearned()[wordLower] != nil || externalWords[wordLower] != nil
     }
 
-    /// Stored casing for a learned word, or nil if not learned.
+    /// Stored casing for a personal-dictionary word, or nil if unknown.
+    /// Learned casing wins over the iOS-provided one: it tracks the user's own
+    /// mid-sentence behavior (see refreshLearnedCasing).
     func learnedWord(for wordLower: String) -> String? {
-        loadLearned()[wordLower]
+        loadLearned()[wordLower] ?? externalWords[wordLower]
     }
 
-    /// All learned words in their stored casing, for candidate generation.
+    /// The whole personal dictionary in stored casing, for candidate
+    /// generation — learned words plus this session's iOS-provided words.
     func learnedWords() -> [String] {
-        Array(loadLearned().values)
+        var merged = loadLearned()
+        for (lower, word) in externalWords where merged[lower] == nil {
+            merged[lower] = word
+        }
+        return Array(merged.values)
+    }
+
+    /// Replaces this session's iOS-provided words (UILexicon: contact names,
+    /// single-word text replacements). Session-scoped and never persisted —
+    /// iOS owns the source and it changes as contacts do. Entries failing word
+    /// hygiene (multi-word phrases, emails) are dropped; the cap bounds the
+    /// per-keystroke correction scan against enormous address books.
+    func setExternalWords(_ words: [String]) {
+        var accepted: [String: String] = [:]
+        for word in words where Self.isLearnableWord(word) {
+            let lower = word.lowercased()
+            if accepted[lower] == nil {
+                accepted[lower] = word
+                if accepted.count >= Self.externalWordCap { break }
+            }
+        }
+        externalWords = accepted
+        if !accepted.isEmpty {
+            print("UsageStore: \(accepted.count) supplementary words from UILexicon")
+        }
     }
 
     // MARK: - Cache loading

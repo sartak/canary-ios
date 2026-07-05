@@ -104,7 +104,7 @@
 **Goal**: Make keyboard learn user patterns and vocabulary
 
 ### Data Storage
-- [ ] Access UILexicon for user's personal dictionary and learned words
+- [x] Access UILexicon for user's personal dictionary and learned words
 - [x] Implement local storage system (SQLite)
 - [x] Use user dictionary for typeahead and typo correction
 - [ ] Add dictionary management to the main app

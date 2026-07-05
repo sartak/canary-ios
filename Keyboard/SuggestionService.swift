@@ -57,6 +57,16 @@ class SuggestionService {
         self.keyCenters = keyCenters
         self.keyPitch = keyPitch
     }
+
+    /// Feeds iOS-provided UILexicon words (contact names, single-word text
+    /// replacements) into the session's personal dictionary. Corpus words are
+    /// already first-class and are filtered out here so no consumption path
+    /// ever sees the same word from two sources; multi-word phrases fail the
+    /// store's word hygiene (text expansion is Milestone 10's business).
+    func setSupplementaryLexicon(words: [String]) {
+        guard let store = usageStore else { return }
+        store.setExternalWords(words.filter { !lexiconContains($0.lowercased()) })
+    }
     /// The prefix from the PREVIOUS `updateContext`, used to detect a word commit:
     /// a non-empty previous prefix followed by an empty one means the user just
     /// typed a word boundary and completed a word (see `detectWordCommit`).
