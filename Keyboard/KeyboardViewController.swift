@@ -53,6 +53,11 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     private var lastSwipePath: [CGPoint] = []
     private var lastLiveDecodeTime: CFAbsoluteTime = 0
+    /// Swipe-only mode (configuration key on the number layer, like
+    /// the debug toggle), persisted across sessions: letter keys become
+    /// tap-inert so entering letters requires swiping — for unlearning tap
+    /// muscle memory. Swiping itself is always available on the alpha layer.
+    private var swipeOnlyModeEnabled = UserDefaults.standard.bool(forKey: "swipeOnlyMode")
     private var characterFrequencies: CharacterDistribution?
     private var charBeforeCursor: Character?
     private var backspaceShiftState: ShiftState = .unshifted
@@ -147,7 +152,19 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.deviceLayout = deviceLayout
         keyboardTouchView.gestureRecognizer.deviceLayout = deviceLayout
         keyboardTouchView.gestureRecognizer.swipeEnabled = (currentLayer == .alpha)
+        keyboardTouchView.swipeOnlyActive = swipeOnlyModeEnabled && (currentLayer == .alpha)
+        keyboardTouchView.swipeOnlyToggleOn = swipeOnlyModeEnabled
         keyboardTouchView.autocorrectEnabled = !autocorrectUserDisabled
+
+        // Swipe-only mode announces itself with a shimmer whenever the alpha
+        // layer appears (launch, layer switch back, rebuild).
+        if swipeOnlyModeEnabled && currentLayer == .alpha {
+            // A sliver of delay so the sweep starts after the first frame is
+            // on screen rather than burning its opening mid-layout.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.keyboardTouchView?.playSwipeShimmer()
+            }
+        }
         keyboardTouchView.showHitboxDebug = debugVisualizationEnabled
         keyboardTouchView.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
         if debugVisualizationEnabled {
@@ -478,11 +495,27 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
 
 
+    /// In swipe-only mode, letter keys are tap-inert: entering
+    /// letters requires swiping (the mode exists to unlearn tap muscle
+    /// memory). Everything a swipe can't produce — space, backspace, shift,
+    /// enter, layers, apostrophe, and long-press alternates — still works.
+    private func isTapBlocked(_ keyData: KeyData) -> Bool {
+        guard swipeOnlyModeEnabled, currentLayer == .alpha,
+              case .simple(let text) = keyData.key.keyType,
+              let first = text.lowercased().first, first.isLetter else {
+            return false
+        }
+        return true
+    }
+
     private func handleKeyTouchDown(_ keyData: KeyData) {
         if keyboardTouchView.showHitboxDebug {
             keyboardTouchView.clearDebugSwipePath()
         }
         keyboardTouchView.setNeedsDisplay()
+
+        // Tap-inert keys give no press feedback: the silence is the signal.
+        if isTapBlocked(keyData) { return }
 
         // Provide haptic feedback for key press
         HapticFeedback.shared.keyPress(for: keyData.key, hasFullAccess: hasFullAccess)
@@ -499,6 +532,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
         // Stop key repeat if this key was repeating
         stopKeyRepeat()
+
+        if isTapBlocked(keyData) { return }
 
         // Handle the key tap (only if it wasn't a long press that triggered repeat)
         if currentlyRepeatingKey == nil || currentlyRepeatingKey?.index != keyData.index {
@@ -1062,6 +1097,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             if debugVisualizationEnabled {
                 keyboardTouchView?.setDebugSwipePath(lastSwipePath)
             }
+            keyboardTouchView?.setNeedsDisplay()
+        case .toggleSwipeOnly:
+            swipeOnlyModeEnabled.toggle()
+            print("KeyboardViewController: swipe-only mode toggled \(swipeOnlyModeEnabled ? "ON" : "OFF") (layer: \(currentLayer))")
+            UserDefaults.standard.set(swipeOnlyModeEnabled, forKey: "swipeOnlyMode")
+            keyboardTouchView?.swipeOnlyActive = swipeOnlyModeEnabled && (currentLayer == .alpha)
+            keyboardTouchView?.swipeOnlyToggleOn = swipeOnlyModeEnabled
             keyboardTouchView?.setNeedsDisplay()
         }
     }

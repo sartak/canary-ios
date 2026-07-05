@@ -42,6 +42,22 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     private var debugSwipePath: [CGPoint] = []
     private var debugTemplatePaths: [[CGPoint]] = []
 
+    /// Whether swipe-only mode is active for the CURRENT layer (the
+    /// controller combines the user toggle with the alpha-layer gate). Letter
+    /// keys dim to `swipeDimAlpha` to signal they are tap-inert.
+    var swipeOnlyActive: Bool = false {
+        didSet { if swipeOnlyActive != oldValue { setNeedsDisplay() } }
+    }
+    /// The raw user toggle, un-gated by layer, so the number layer's
+    /// configuration key shows the real setting.
+    var swipeOnlyToggleOn: Bool = false {
+        didSet { if swipeOnlyToggleOn != oldValue { setNeedsDisplay() } }
+    }
+    private let swipeDimAlpha: CGFloat = 0.65
+    private let shimmerDuration: TimeInterval = 1.1
+    private var shimmerStart: CFAbsoluteTime?
+    private var shimmerTimer: Timer?
+
     // Multi-touch gesture recognizer
     private(set) var gestureRecognizer: MultiTouchKeyboardGestureRecognizer!
 
@@ -262,7 +278,12 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
 
             // Draw rounded key background
             let path = UIBezierPath(roundedRect: key.viewFrame, cornerRadius: deviceLayout.cornerRadius)
-            let color = key.key.backgroundColor(shiftState: shiftState, traitCollection: self.traitCollection, tapped: isPressed, isLargeScreen: isLargeScreen)
+            var color = key.key.backgroundColor(shiftState: shiftState, traitCollection: self.traitCollection, tapped: isPressed, isLargeScreen: isLargeScreen)
+            // Swipe-only mode dims the whole key face, not just the glyph;
+            // pressed keys keep full-strength feedback.
+            if !isPressed, let dim = swipeDimFactor(for: key) {
+                color = color.withAlphaComponent(dim)
+            }
             color.setFill()
             path.fill()
 
@@ -280,7 +301,8 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     pressed: isPressed,
                     autocorrectEnabled: autocorrectEnabled,
                     hasUndo: key.key.keyType == .backspace ? hasUndo : false,
-                    debugVisualizationEnabled: showHitboxDebug
+                    debugVisualizationEnabled: showHitboxDebug,
+                    swipeOnlyMode: swipeOnlyToggleOn
                 ) as? UIImageView {
                     // Draw SF Symbol
                     let symbolImage = symbolView.image!
@@ -297,6 +319,49 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     // Fallback to text
                     drawKeyText(for: key, theme: theme)
                 }
+            }
+        }
+
+        // Swipe-only shimmer: a soft highlight band washing left-to-right,
+        // clipped to the dimmed letter-key faces so the glow follows the
+        // keycaps and blends continuously across key boundaries.
+        if swipeOnlyActive, let start = shimmerStart,
+           let context = UIGraphicsGetCurrentContext() {
+            let progress = CGFloat((CFAbsoluteTimeGetCurrent() - start) / shimmerDuration)
+            if progress >= 0 && progress <= 1 {
+                let eased = progress * progress * (3 - 2 * progress)
+                let band = bounds.width * 0.25
+                // The band leans ~20° like a light glare rather than sweeping
+                // as a vertical bar; the extra travel margin keeps the tilted
+                // band fully off-screen at both ends of the sweep.
+                let axis = CGPoint(x: 0.94, y: 0.34)
+                let skew = bounds.height * (axis.y / axis.x) / 2
+                let margin = band + skew
+                let bandCenter = eased * (bounds.width + 2 * margin) - margin
+
+                context.saveGState()
+                let clip = UIBezierPath()
+                for key in keyData where swipeDimFactor(for: key) != nil {
+                    clip.append(UIBezierPath(roundedRect: key.viewFrame, cornerRadius: deviceLayout.cornerRadius))
+                }
+                clip.addClip()
+
+                let colors = [
+                    UIColor.white.withAlphaComponent(0).cgColor,
+                    UIColor.white.withAlphaComponent(0.35).cgColor,
+                    UIColor.white.withAlphaComponent(0).cgColor,
+                ]
+                if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                             colors: colors as CFArray,
+                                             locations: [0, 0.5, 1]) {
+                    context.setBlendMode(.plusLighter)
+                    let mid = bounds.midY
+                    context.drawLinearGradient(gradient,
+                                               start: CGPoint(x: bandCenter - band * axis.x, y: mid - band * axis.y),
+                                               end: CGPoint(x: bandCenter + band * axis.x, y: mid + band * axis.y),
+                                               options: [])
+                }
+                context.restoreGState()
             }
         }
 
@@ -421,7 +486,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
             let font = UIFont.systemFont(ofSize: fontSize)
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
-                .foregroundColor: theme.textColor
+                .foregroundColor: labelColor(for: key, theme: theme)
             ]
 
             let textSize = text.size(withAttributes: attributes)
@@ -433,6 +498,48 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
             )
 
             text.draw(in: textRect, withAttributes: attributes)
+        }
+    }
+
+    // MARK: - Swipe-mode letter treatment
+
+    /// Dim factor for swipe-only mode on this key, or nil when it doesn't
+    /// apply. Dimmed keys are exactly the tap-inert ones (letters — the same
+    /// rule the controller blocks with), so the apostrophe, which stays
+    /// tappable because it cannot be swiped, keeps full brightness.
+    private func swipeDimFactor(for key: KeyData) -> CGFloat? {
+        guard swipeOnlyActive, case .simple(let text) = key.key.keyType,
+              let first = text.lowercased().first, first.isLetter else {
+            return nil
+        }
+        return swipeDimAlpha
+    }
+
+    private func labelColor(for key: KeyData, theme: ColorTheme) -> UIColor {
+        guard let factor = swipeDimFactor(for: key) else { return theme.textColor }
+        return theme.textColor.withAlphaComponent(factor)
+    }
+
+    /// Plays the one-shot left-to-right shimmer. Called when swipe-only mode
+    /// is toggled on and when the keyboard first appears with it enabled; the
+    /// timer lives only for the sweep, so nothing animates while idle.
+    func playSwipeShimmer() {
+        guard swipeOnlyActive else {
+            print("KeyboardTouchView: shimmer skipped (swipe-only mode not active on this layer)")
+            return
+        }
+        print("KeyboardTouchView: playing swipe shimmer")
+        shimmerTimer?.invalidate()
+        shimmerStart = CFAbsoluteTimeGetCurrent()
+        shimmerTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            if let start = self.shimmerStart,
+               CFAbsoluteTimeGetCurrent() - start > self.shimmerDuration {
+                self.shimmerTimer?.invalidate()
+                self.shimmerTimer = nil
+                self.shimmerStart = nil
+            }
+            self.setNeedsDisplay()
         }
     }
 }
