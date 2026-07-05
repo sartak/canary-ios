@@ -197,7 +197,13 @@ class SuggestionService {
         lastAppliedCorrection = correction
     }
 
-    func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
+    /// `learningEnabled` gates word-usage counting and promotion; the
+    /// controller passes false when the HOST app disables autocorrection
+    /// (terminal emulators, code editors — not natural language, so commands
+    /// like 'sudo' must never accrue counts and get learned). The user's own
+    /// autocorrect toggle deliberately does NOT gate learning: it means "stop
+    /// correcting me", not "stop learning my vocabulary".
+    func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, learningEnabled: Bool, shiftState: ShiftState) {
         self.contextBefore = before
         self.contextAfter = after
         self.selectedText = selected
@@ -205,7 +211,13 @@ class SuggestionService {
         let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
         lastTypedWord = prefix
 
-        detectWordCommit(before: before, prefix: prefix)
+        if learningEnabled {
+            detectWordCommit(before: before, prefix: prefix)
+        } else {
+            // Keep the transition state coherent so re-entering a normal field
+            // can't misattribute a commit across the boundary.
+            lastAppliedCorrection = nil
+        }
         previousPrefix = prefix
 
         let frequencies = frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)

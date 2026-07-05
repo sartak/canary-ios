@@ -922,7 +922,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             let after = self.textDocumentProxy.documentContextAfterInput
             let selected = self.textDocumentProxy.selectedText
 
-            self.suggestionService.updateContext(before: before, after: after, selected: selected, autocorrectEnabled: !autocorrectAppDisabled && !autocorrectUserDisabled, shiftState: effectiveShiftState())
+            self.suggestionService.updateContext(before: before, after: after, selected: selected, autocorrectEnabled: !autocorrectAppDisabled && !autocorrectUserDisabled, learningEnabled: !autocorrectAppDisabled, shiftState: effectiveShiftState())
         }
     }
 
