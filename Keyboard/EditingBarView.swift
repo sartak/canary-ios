@@ -211,6 +211,9 @@ class EditingBarView: UIView {
 
     func flashError(for button: EditingButton) {
         flash(button: button, color: .systemRed)
+        // Color alone is invisible to red/green colorblindness; failure also
+        // shakes so the two outcomes never read the same.
+        shake(icon(for: button))
     }
 
     func flashSuccess(for button: EditingButton) {
@@ -218,24 +221,45 @@ class EditingBarView: UIView {
         flash(button: button, color: color)
     }
 
-    private func flash(button: EditingButton, color: UIColor) {
-        let icon: UIImageView
+    private func icon(for button: EditingButton) -> UIImageView {
         switch button {
-        case .cut: icon = cutIcon
-        case .copy: icon = copyIcon
-        case .paste: icon = pasteIcon
+        case .cut: return cutIcon
+        case .copy: return copyIcon
+        case .paste: return pasteIcon
         }
+    }
+
+    private func flash(button: EditingButton, color: UIColor) {
+        let icon = icon(for: button)
 
         flashResetWorkItems[button]?.cancel()
-        icon.tintColor = color
+
+        // tintColor is not an animatable property; cross-dissolving the view
+        // animates the recolored template image in, then back out.
+        UIView.transition(with: icon, duration: 0.15,
+                          options: [.transitionCrossDissolve, .allowUserInteraction]) {
+            icon.tintColor = color
+        }
 
         let workItem = DispatchWorkItem { [weak self, weak icon] in
             guard let self, let icon else { return }
             let theme = ColorTheme.current(for: self.traitCollection)
-            icon.tintColor = theme.decorationColor
+            UIView.transition(with: icon, duration: 0.4,
+                              options: [.transitionCrossDissolve, .allowUserInteraction]) {
+                icon.tintColor = theme.decorationColor
+            }
         }
         flashResetWorkItems[button] = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: workItem)
+    }
+
+    private func shake(_ view: UIView) {
+        let animation = CAKeyframeAnimation(keyPath: "position.x")
+        animation.values = [0, -4, 4, -3, 3, -1, 0]
+        animation.keyTimes = [0, 0.15, 0.35, 0.55, 0.7, 0.85, 1]
+        animation.duration = 0.35
+        animation.isAdditive = true
+        view.layer.add(animation, forKey: "shake")
     }
 
     func setDebugVisualizationEnabled(_ enabled: Bool) {
