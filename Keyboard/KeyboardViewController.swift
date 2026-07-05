@@ -152,13 +152,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.deviceLayout = deviceLayout
         keyboardTouchView.gestureRecognizer.deviceLayout = deviceLayout
         keyboardTouchView.gestureRecognizer.swipeEnabled = (currentLayer == .alpha)
-        keyboardTouchView.swipeOnlyActive = swipeOnlyModeEnabled && (currentLayer == .alpha)
+        keyboardTouchView.swipeOnlyActive = swipeOnlyEffective
         keyboardTouchView.swipeOnlyToggleOn = swipeOnlyModeEnabled
         keyboardTouchView.autocorrectEnabled = !autocorrectUserDisabled
 
         // Swipe-only mode announces itself with a shimmer whenever the alpha
         // layer appears (launch, layer switch back, rebuild).
-        if swipeOnlyModeEnabled && currentLayer == .alpha {
+        if swipeOnlyEffective {
             // A sliver of delay so the sweep starts after the first frame is
             // on screen rather than burning its opening mid-layout.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -495,12 +495,21 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
 
 
+    /// Whether swipe-only mode is in force right now: the toggle, on the
+    /// alpha layer, in a field where the host allows autocorrection. Fields
+    /// that disable it (terminals, code editors) aren't natural language —
+    /// bash pipelines can't be swiped — so the tap block lifts there and the
+    /// dim lifts with it; the toggle itself stays on for normal fields.
+    private var swipeOnlyEffective: Bool {
+        swipeOnlyModeEnabled && currentLayer == .alpha && !autocorrectAppDisabled
+    }
+
     /// In swipe-only mode, letter keys are tap-inert: entering
     /// letters requires swiping (the mode exists to unlearn tap muscle
     /// memory). Everything a swipe can't produce — space, backspace, shift,
     /// enter, layers, apostrophe, and long-press alternates — still works.
     private func isTapBlocked(_ keyData: KeyData) -> Bool {
-        guard swipeOnlyModeEnabled, currentLayer == .alpha,
+        guard swipeOnlyEffective,
               case .simple(let text) = keyData.key.keyType,
               let first = text.lowercased().first, first.isLetter else {
             return false
@@ -1066,11 +1075,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     private func disableAutocorrect() {
         autocorrectAppDisabled = true
+        keyboardTouchView?.swipeOnlyActive = swipeOnlyEffective
         refreshSuggestions()
     }
 
     private func enableAutocorrect() {
         autocorrectAppDisabled = false
+        keyboardTouchView?.swipeOnlyActive = swipeOnlyEffective
         refreshSuggestions()
     }
 
@@ -1102,7 +1113,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             swipeOnlyModeEnabled.toggle()
             print("KeyboardViewController: swipe-only mode toggled \(swipeOnlyModeEnabled ? "ON" : "OFF") (layer: \(currentLayer))")
             UserDefaults.standard.set(swipeOnlyModeEnabled, forKey: "swipeOnlyMode")
-            keyboardTouchView?.swipeOnlyActive = swipeOnlyModeEnabled && (currentLayer == .alpha)
+            keyboardTouchView?.swipeOnlyActive = swipeOnlyEffective
             keyboardTouchView?.swipeOnlyToggleOn = swipeOnlyModeEnabled
             keyboardTouchView?.setNeedsDisplay()
         }
