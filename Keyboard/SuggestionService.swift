@@ -240,17 +240,64 @@ class SuggestionService {
         }
 
         let startTime = CFAbsoluteTimeGetCurrent()
-        let correction = autocorrectService.findBestCorrection(for: wordToCorrect.lowercased(), maxDistance: 2)
+        let (correction, learnedWon) = findBestCorrectionIncludingLearned(for: wordToCorrect.lowercased(), maxDistance: 2)
         let endTime = CFAbsoluteTimeGetCurrent()
         let duration = (endTime - startTime) * 1000 // Convert to milliseconds
 
         if let correction = correction {
             let finalCorrection = applySmartCapitalization(word: correction + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
-            print("AutocorrectService: '\(prefix.lowercased())' -> '\(finalCorrection)' in \(String(format: "%.3f", duration))ms")
+            let source = learnedWon ? " (learned)" : ""
+            print("AutocorrectService: '\(prefix.lowercased())' -> '\(finalCorrection)'\(source) in \(String(format: "%.3f", duration))ms")
             return finalCorrection
         } else {
             print("AutocorrectService: '\(prefix.lowercased())' -> no correction in \(String(format: "%.3f", duration))ms")
             return nil
+        }
+    }
+
+    /// SymSpell correction over the corpus, merged with a direct scan of the
+    /// learned set. The learned set is tiny, so verifying every entry with the
+    /// same edit-distance metric costs less than the corpus query's own
+    /// delete-generation — no parallel deletes table needed. Ranking: smaller
+    /// edit distance wins; at equal distance the learned word wins (personal
+    /// vocabulary bias — "clauxe" corrects to a learned "Claude", not
+    /// "clause"); among learned ties, the higher personal count wins.
+    private func findBestCorrectionIncludingLearned(for wordLower: String,
+                                                    maxDistance: Int) -> (word: String?, learned: Bool) {
+        var learnedBest: (word: String, distance: Int, count: Int)?
+        if let store = usageStore {
+            for candidate in store.learnedWords() {
+                let candidateLower = candidate.lowercased()
+                if candidateLower == wordLower { continue }  // exact match is exempted upstream
+                let distance = autocorrectService.editDistance(wordLower, candidateLower, maxDistance: maxDistance)
+                guard distance <= maxDistance else { continue }
+                let count = store.personalCount(for: candidateLower)
+                if let current = learnedBest {
+                    if distance < current.distance || (distance == current.distance && count > current.count) {
+                        learnedBest = (candidate, distance, count)
+                    }
+                } else {
+                    learnedBest = (candidate, distance, count)
+                }
+            }
+        }
+
+        // A learned word at distance 1 cannot be beaten (ties go to learned).
+        if let learnedBest, learnedBest.distance == 1 {
+            return (learnedBest.word, true)
+        }
+
+        let corpus = autocorrectService.findBestCorrection(for: wordLower, maxDistance: maxDistance)
+        switch (corpus, learnedBest) {
+        case (nil, nil):
+            return (nil, false)
+        case (nil, let learned?):
+            return (learned.word, true)
+        case (let corpus?, nil):
+            return (corpus, false)
+        case (let corpus?, let learned?):
+            let corpusDistance = autocorrectService.editDistance(wordLower, corpus.lowercased(), maxDistance: maxDistance)
+            return corpusDistance < learned.distance ? (corpus, false) : (learned.word, true)
         }
     }
 

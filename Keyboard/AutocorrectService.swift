@@ -23,6 +23,16 @@ class AutocorrectService {
         sqlite3_interrupt(db)
     }
 
+    /// Edit distance between two words, the same metric SymSpell verification
+    /// uses (999 beyond maxDistance). Exposed so learned-word correction can
+    /// rank against corpus corrections without a parallel deletes table: the
+    /// learned set is tiny (tens to hundreds), so verifying every entry
+    /// directly costs less than the delete-generation the corpus query already
+    /// does per keystroke.
+    func editDistance(_ s1: String, _ s2: String, maxDistance: Int) -> Int {
+        levenshteinDistance(s1, s2, maxDistance: maxDistance)
+    }
+
     func findBestCorrection(for word: String, maxDistance: Int, task: DispatchWorkItem? = nil) -> String? {
         for distance in 1...maxDistance {
             if let result = querySymSpell(word: word, exactDistance: distance, task: task) {

@@ -757,7 +757,11 @@ swipe commits as the denominator for a correction rate.
 by a one-tap autocorrect-rejection fast-track that learns a defended word
 immediately. Learned words are first-class: the decoder appends them to the swipe
 candidate pool (same endpoint pruning as lexicon words) and SuggestionService
-offers them in typeahead and exempts them from autocorrect. Stored casing follows
+offers them in typeahead, exempts them from autocorrect, and includes them in
+typo correction (a direct edit-distance scan merged with the SymSpell corpus
+result — the learned set is far too small to warrant a parallel deletes table —
+with distance ties going to the learned word, so "clauxe" corrects to a learned
+"Claude" rather than "clause"). Stored casing follows
 the lexicon's proper-noun convention (typing lowercase preserves it, so a learned
 "Claude" suggests and swipes as "Claude") and is updated only from mid-sentence
 commits — sentence-initial capitalization is auto-shift noise, and swipe-inserted
