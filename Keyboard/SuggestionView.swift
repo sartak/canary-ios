@@ -47,6 +47,9 @@ class SuggestionView: UIView {
     }
 
     private func createButton(title: String, textColor: UIColor, target: Selector, leftPadding: CGFloat, rightPadding: CGFloat, x: CGFloat, y: CGFloat, height: CGFloat, strikethrough: Bool = false) -> UIButton {
+        // Button width is text size plus symmetric padding, so stray
+        // whitespace in a label renders the word off-center.
+        let title = title.trimmingCharacters(in: .whitespaces)
         let font = UIFont.systemFont(ofSize: deviceLayout.suggestionFontSize)
 
         var attrs: [NSAttributedString.Key: Any] = [
