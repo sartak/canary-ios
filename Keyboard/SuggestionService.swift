@@ -188,10 +188,17 @@ class SuggestionService {
                 // We have an exact match, do smart capitalization
                 let smartCapitalizedWord = applySmartCapitalization(word: exactMatch, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
                 autocorrectSuggestion = smartCapitalizedWord != (prefix + suffix) ? smartCapitalizedWord : nil
-            } else if suffix.isEmpty, !prefix.isEmpty, usageStore?.isLearned(prefix.lowercased()) == true {
+            } else if suffix.isEmpty, !prefix.isEmpty,
+                      let learnedWord = usageStore?.learnedWord(for: prefix.lowercased()) {
                 // A learned word is first-class, exactly like a lexicon exact
-                // match: never propose a correction for it.
-                autocorrectSuggestion = nil
+                // match: never correct it away, but do propose its learned
+                // casing when that differs from what was typed ("claude" ->
+                // "Claude"), the same way the lexicon's "i" -> "I" works.
+                // Declining that proposal flows through the rejection
+                // fast-track, whose trusted bump downgrades the learned casing
+                // — so the proposal stops recurring.
+                let smartCapitalizedWord = applySmartCapitalization(word: learnedWord, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
+                autocorrectSuggestion = smartCapitalizedWord != (prefix + suffix) ? smartCapitalizedWord : nil
             } else {
                 // No exact match, proceed with autocorrect
                 autocorrectSuggestion = updateAutocorrect(prefix: prefix, suffix: suffix, autocorrectEnabled: autocorrectEnabled, shiftState: shiftState)

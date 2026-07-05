@@ -289,6 +289,11 @@ final class UsageStore {
         loadLearned()[wordLower] != nil
     }
 
+    /// Stored casing for a learned word, or nil if not learned.
+    func learnedWord(for wordLower: String) -> String? {
+        loadLearned()[wordLower]
+    }
+
     /// All learned words in their stored casing, for candidate generation.
     func learnedWords() -> [String] {
         Array(loadLearned().values)
