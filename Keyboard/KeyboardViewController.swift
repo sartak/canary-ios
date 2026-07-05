@@ -952,6 +952,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         pushKeyGeometryIfAlpha()
 
         editingBarView.updateLayout(for: effectiveShiftState, containerWidth: view.bounds.width)
+
+        // Suggestions were capitalized under the previous shift state; recompute
+        // so the bar reflects e.g. a caps-lock toggle immediately.
+        refreshSuggestions()
     }
 
     /// Keeps SuggestionService's letter-key geometry current for correction
