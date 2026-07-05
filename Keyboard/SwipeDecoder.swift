@@ -32,6 +32,11 @@ struct SwipeCandidate {
 final class SwipeDecoder {
     private let lexicon: SwipeLexicon
 
+    /// Personal usage + learned words (Milestone 9 stage 2), set by
+    /// `SuggestionService` after construction. Learned words join the candidate
+    /// pool and personal counts blend into the frequency prior.
+    weak var usageStore: UsageStore?
+
     /// Per-geometry template memoization, reused across decodes and rebuilt
     /// lazily when key centers change (rotation / layout switch).
     private var cache: SwipeTemplateCache?
@@ -91,9 +96,12 @@ final class SwipeDecoder {
         let radius = SwipeTuning.pruneRadius * keyPitch
         let startLetters = letters(near: start, in: keyCenters, radius: radius)
         let endLetters = letters(near: end, in: keyCenters, radius: radius)
-        let entries = lexicon.candidates(startingWith: startLetters,
-                                         endingWith: endLetters,
-                                         limit: SwipeTuning.maxCandidates)
+        let lexiconEntries = lexicon.candidates(startingWith: startLetters,
+                                                endingWith: endLetters,
+                                                limit: SwipeTuning.maxCandidates)
+        let entries = lexiconEntries + learnedEntries(startLetters: startLetters,
+                                                      endLetters: endLetters,
+                                                      existing: lexiconEntries)
 
         let (ranked, skipped) = rank(entries: entries, cache: cache,
                                      userResampled: userResampled,
@@ -146,8 +154,11 @@ final class SwipeDecoder {
 
         let radius = SwipeTuning.pruneRadius * keyPitch
         let startLetters = letters(near: start, in: keyCenters, radius: radius)
-        let entries = lexicon.candidates(startingWith: startLetters,
-                                         limit: SwipeTuning.liveCandidates)
+        let lexiconEntries = lexicon.candidates(startingWith: startLetters,
+                                                limit: SwipeTuning.liveCandidates)
+        let entries = lexiconEntries + learnedEntries(startLetters: startLetters,
+                                                      endLetters: nil,
+                                                      existing: lexiconEntries)
 
         let (ranked, skipped) = rank(entries: entries, cache: cache,
                                      userResampled: userResampled,
@@ -241,9 +252,14 @@ final class SwipeDecoder {
             }
 
             // Frequency prior: log P(w) = log(count) − log(total), with true
-            // counts from the Google Web Trillion Word Corpus. Clamped against
-            // log(0) in case of a defective zero count.
-            let logPrior = log(Double(max(entry.frequency, 1))) - logTotalFrequency
+            // counts from the Google Web Trillion Word Corpus. Personal usage
+            // adds mass so the user's own vocabulary wins geometric ties
+            // (swipe→scope, canary). `personalCount` is a dictionary hit — no SQL
+            // — so this stays cheap per candidate; the `lowercased()` allocates,
+            // which the design accepts. Clamped against log(0).
+            let personal = usageStore?.personalCount(for: entry.word.lowercased()) ?? 0
+            let effectiveCount = entry.frequency + LearningTuning.personalCountBoost * personal
+            let logPrior = log(Double(max(effectiveCount, 1))) - logTotalFrequency
             let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
                 - Double(xl * xl) / (2 * Self.sigmaLocationSq)
                 + SwipeTuning.lmWeight * logPrior
@@ -256,6 +272,59 @@ final class SwipeDecoder {
 
         let ranked = Array(scored.sorted { $0.logScore > $1.logScore }.prefix(limit))
         return (ranked, skipped)
+    }
+
+    // MARK: - Learned words
+
+    /// Learned words (Milestone 9 stage 2) that survive the same endpoint pruning
+    /// as lexicon candidates, as synthetic entries. Endpoints are the first/last
+    /// letters of the letters-only lowercased form, mirroring
+    /// `build_corpus.swipe_columns`; words with fewer than two distinct
+    /// consecutive-collapsed keys are dropped (their template would be nil).
+    /// Words already present in `existing` (by lowercased word) are skipped so a
+    /// learned word never duplicates its lexicon row.
+    private func learnedEntries(startLetters: Set<Character>,
+                                endLetters: Set<Character>?,
+                                existing: [SwipeLexiconEntry]) -> [SwipeLexiconEntry] {
+        guard let store = usageStore else { return [] }
+        let words = store.learnedWords()
+        guard !words.isEmpty else { return [] }
+
+        var seen = Set(existing.map { $0.word.lowercased() })
+        var result: [SwipeLexiconEntry] = []
+        for word in words {
+            let lower = word.lowercased()
+            if seen.contains(lower) { continue }
+
+            let letters = lower.filter { $0.isASCII && $0.isLetter }
+            guard let first = letters.first, let last = letters.last else { continue }
+            guard startLetters.contains(first) else { continue }
+            if let endLetters, !endLetters.contains(last) { continue }
+            guard Self.hasTwoDistinctKeys(letters) else { continue }
+
+            // Base mass only: the personal-count boost is applied uniformly to
+            // every candidate in rank()'s prior blend — baking it in here too
+            // would double-count it for learned words.
+            result.append(SwipeLexiconEntry(
+                word: word, frequencyRank: 0,
+                frequency: LearningTuning.learnedWordFrequency))
+            seen.insert(lower)
+        }
+        return result
+    }
+
+    /// Whether `letters` (already letters-only) has at least two distinct keys
+    /// after collapsing consecutive duplicates — the swipe-decodability floor
+    /// (mirrors `SwipeTemplate.make`, which returns nil otherwise).
+    private static func hasTwoDistinctKeys(_ letters: String) -> Bool {
+        var previous: Character?
+        var distinct = 0
+        for character in letters where character != previous {
+            distinct += 1
+            previous = character
+            if distinct >= 2 { return true }
+        }
+        return false
     }
 
     // MARK: - Geometry / cache helpers

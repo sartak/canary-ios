@@ -108,10 +108,10 @@
 - [x] Implement local storage system (SQLite)
 - [ ] Use user dictionary for typeahead and typo correction
 - [ ] Add dictionary management to the main app
-- [ ] Learn a word if it's retyped immediately after an autocorrect of it
+- [x] Learn a word when the user rejects an autocorrect of it
 - [x] Track swipe accuracy based on whether word was corrected, for fine-tuning
-- [ ] Add frequency tracking for typed words
-- [ ] Enhance predictions with learned vocabulary
+- [x] Add frequency tracking for typed words
+- [x] Enhance predictions with learned vocabulary
 - [ ] Implement memory pressure response (release caches, unload unused data)
 
 ### Smarter Autocorrect

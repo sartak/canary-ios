@@ -29,11 +29,34 @@ class SuggestionService {
     var autocorrectSuggestion: String?
     var autocorrectActions: [InputAction]?
 
-    /// Correction log (Milestone 9). Logging only — no behavior depends on it.
-    weak var usageStore: UsageStore?
+    /// Usage/learning store (Milestone 9). Correction logging plus word learning
+    /// and personal frequency. Propagated to the decoder so the swipe prior can
+    /// blend in personal counts.
+    weak var usageStore: UsageStore? {
+        didSet { swipeDecoder.usageStore = usageStore }
+    }
     /// Raw word the user has actually typed (the current prefix), captured on each
     /// context update so autocorrect events can be logged with what was typed.
     private(set) var lastTypedWord: String = ""
+    /// The prefix from the PREVIOUS `updateContext`, used to detect a word commit:
+    /// a non-empty previous prefix followed by an empty one means the user just
+    /// typed a word boundary and completed a word (see `detectWordCommit`).
+    private var previousPrefix: String = ""
+    /// The correction most recently applied by autocorrect, remembered so a word
+    /// commit can attribute the count to the CORRECTED word even when it shares no
+    /// prefix with what was typed (e.g. "teh" → "the"). Consumed once, then cleared.
+    private var lastAppliedCorrection: String?
+
+    /// Prepared existence check against the shipped lexicon, so promotions and the
+    /// rejection fast-track never "learn" a word the corpus already knows.
+    private lazy var lexiconExistsStatement: OpaquePointer? = {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM words WHERE word_lower = ? LIMIT 1", -1, &stmt, nil) == SQLITE_OK else {
+            print("SuggestionService: could not prepare lexicon exists check")
+            return nil
+        }
+        return stmt
+    }()
 
     init?() {
         guard let path = Bundle(for: SuggestionService.self).path(forResource: "words", ofType: "db") else {
@@ -68,6 +91,9 @@ class SuggestionService {
     }
 
     deinit {
+        if let lexiconExistsStatement {
+            sqlite3_finalize(lexiconExistsStatement)
+        }
         sqlite3_close(db)
     }
 
@@ -135,6 +161,11 @@ class SuggestionService {
     func noteAutocorrectApplied() {
         guard let correction = autocorrectSuggestion else { return }
         usageStore?.recordTapEvent(kind: .autocorrectApplied, typed: lastTypedWord, resolved: correction)
+        // Remember the correction so the imminent word-commit counts the CORRECTED
+        // word (see detectWordCommit). Built-in safety: because the committed
+        // context word is the correction — never the typo — a misspelling can
+        // never accumulate usage counts and so can never be promoted.
+        lastAppliedCorrection = correction
     }
 
     func updateContext(before: String?, after: String?, selected: String?, autocorrectEnabled: Bool, shiftState: ShiftState) {
@@ -145,6 +176,9 @@ class SuggestionService {
         let (prefix, suffix) = Self.extractWordContext(before: before, after: after)
         lastTypedWord = prefix
 
+        detectWordCommit(before: before, prefix: prefix)
+        previousPrefix = prefix
+
         let frequencies = frequencyService.updateFrequencies(prefix: prefix, suffix: suffix)
 
         let (typeahead, exactMatch) = updateTypeahead(prefix: prefix, suffix: suffix, shiftState: shiftState)
@@ -154,6 +188,10 @@ class SuggestionService {
                 // We have an exact match, do smart capitalization
                 let smartCapitalizedWord = applySmartCapitalization(word: exactMatch, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
                 autocorrectSuggestion = smartCapitalizedWord != (prefix + suffix) ? smartCapitalizedWord : nil
+            } else if suffix.isEmpty, !prefix.isEmpty, usageStore?.isLearned(prefix.lowercased()) == true {
+                // A learned word is first-class, exactly like a lexicon exact
+                // match: never propose a correction for it.
+                autocorrectSuggestion = nil
             } else {
                 // No exact match, proceed with autocorrect
                 autocorrectSuggestion = updateAutocorrect(prefix: prefix, suffix: suffix, autocorrectEnabled: autocorrectEnabled, shiftState: shiftState)
@@ -237,11 +275,34 @@ class SuggestionService {
             matchingWords
         }
 
-        let suggestions = filteredWords.map { word in
+        var suggestions = filteredWords.map { word in
             let wordWithPossessive = word + possessiveSuffix
             let displayWord = applySmartCapitalization(word: wordWithPossessive, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
             let actions = createInputActions(for: displayWord, prefix: prefix, suffix: suffix, excludeTrailingSpace: false)
             return (displayWord, actions)
+        }
+
+        // Append learned words that complete the current prefix, using the same
+        // capitalization/action plumbing as regular completions. Regular
+        // completions keep priority (they're already in `suggestions`); learned
+        // extras are capped so they never crowd the bar.
+        if !searchPrefix.isEmpty, let store = usageStore {
+            var existing = Set(suggestions.map { $0.0.lowercased() })
+            var added = 0
+            for learnedWord in store.learnedWords() {
+                if added >= 2 { break }
+                let learnedLower = learnedWord.lowercased()
+                // Complete the prefix, but don't suggest the word the user has
+                // already typed in full.
+                guard learnedLower.hasPrefix(prefixLower), learnedLower != prefixLower else { continue }
+                let wordWithPossessive = learnedWord + possessiveSuffix
+                let displayWord = applySmartCapitalization(word: wordWithPossessive, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
+                if existing.contains(displayWord.lowercased()) { continue }
+                let actions = createInputActions(for: displayWord, prefix: prefix, suffix: suffix, excludeTrailingSpace: false)
+                suggestions.append((displayWord, actions))
+                existing.insert(displayWord.lowercased())
+                added += 1
+            }
         }
 
         let finalExactMatch = exactMatch.map { $0 + possessiveSuffix }
@@ -379,6 +440,93 @@ class SuggestionService {
         }
 
         return false
+    }
+
+    // MARK: - Word learning (Milestone 9 stage 2)
+
+    /// Detects a completed word from the prefix transition and records one use of
+    /// it, promoting it when warranted. A word is committed when the previous
+    /// update had a partial word (`previousPrefix` non-empty) and this one has
+    /// none (`prefix` empty) — the user just typed a boundary character.
+    ///
+    /// Guarded against cursor-jump / field-switch false positives: the completed
+    /// word from the new context must be EITHER the word the user was typing
+    /// (`previousPrefix` is a case-insensitive prefix of it) OR the correction
+    /// autocorrect just applied. Suggestion picks and autocorrect commits both
+    /// flow through this same transition, so they are counted here (not double).
+    private func detectWordCommit(before: String?, prefix: String) {
+        guard !previousPrefix.isEmpty, prefix.isEmpty, let before = before else { return }
+
+        let appliedCorrection = lastAppliedCorrection
+        lastAppliedCorrection = nil
+
+        let committed = Self.lastCompletedWord(in: before)
+        guard !committed.isEmpty else { return }
+
+        let matchesTyped = committed.lowercased().hasPrefix(previousPrefix.lowercased())
+        let matchesCorrection = appliedCorrection.map { $0 == committed } ?? false
+        guard matchesTyped || matchesCorrection else { return }
+
+        recordCommittedWord(committed)
+    }
+
+    /// The word immediately before the trailing boundary character(s) of `before`,
+    /// using the same `isWordCharacter` rule as prefix/suffix extraction.
+    private static func lastCompletedWord(in before: String) -> String {
+        // Skip the trailing boundary character(s) the user just typed.
+        var end = before.endIndex
+        while end > before.startIndex {
+            let prev = before.index(before: end)
+            if isWordCharacter(in: before, at: prev) { break }
+            end = prev
+        }
+        guard end > before.startIndex else { return "" }
+
+        // Walk back to the start of that word.
+        var start = end
+        while start > before.startIndex {
+            let prev = before.index(before: start)
+            if isWordCharacter(in: before, at: prev) {
+                start = prev
+            } else {
+                break
+            }
+        }
+        return String(before[start..<end])
+    }
+
+    /// Records one committed use of `word`: bumps personal usage and, when the
+    /// count crosses the promotion threshold for a word the lexicon doesn't know
+    /// and hasn't already learned, promotes it to the learned set.
+    func recordCommittedWord(_ word: String) {
+        guard let store = usageStore else { return }
+        let count = store.bumpWordUsage(word)
+        guard count >= LearningTuning.promotionThreshold else { return }
+        let lower = word.lowercased()
+        guard !store.isLearned(lower), !lexiconContains(lower) else { return }
+        store.markLearned(word)
+    }
+
+    /// Fast-track learn: the user tapped the bar to reject an autocorrect of
+    /// `lastTypedWord`, so learn it immediately — one rejection = learned — and
+    /// count the use. Same lexicon + hygiene guards as threshold promotion.
+    func learnRejectedWord() {
+        guard let store = usageStore else { return }
+        let word = lastTypedWord
+        let count = store.bumpWordUsage(word)
+        guard count > 0 else { return }  // hygiene guard rejected it
+        let lower = word.lowercased()
+        guard !lexiconContains(lower) else { return }
+        store.markLearned(word, reason: "rejection")
+    }
+
+    /// Whether the shipped lexicon (`words.db`) already contains `wordLower`.
+    private func lexiconContains(_ wordLower: String) -> Bool {
+        guard let statement = lexiconExistsStatement else { return false }
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        sqlite3_bind_text(statement, 1, wordLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        return sqlite3_step(statement) == SQLITE_ROW
     }
 
     private static func extractWordContext(before: String?, after: String?) -> (prefix: String, suffix: String) {

@@ -749,9 +749,18 @@ coordinates), the committed word, the word the user replaced it with, the decode
 ranked candidate list, and the geometry it was decoded against (layout name,
 keyboard width/height, key pitch). Tap-typing signals land in `tap_events`
 (autocorrect applied/rejected, suggestion picked), and a `counters` row tracks total
-swipe commits as the denominator for a correction rate. This is logging only — no
-decoding or autocorrect behavior consumes the data yet; feeding it back into the
-tuning grid (§8.3) and eventual personalization remains future work.
+swipe commits as the denominator for a correction rate.
+
+**Status: the decoder now consumes personalization.** `UsageStore` gained a
+`word_usage` table (a personal frequency count per committed word) and a
+`learned_words` table, both fed by every commit — typed, swiped, or picked — and
+by a one-tap autocorrect-rejection fast-track that learns a defended word
+immediately. Learned words are first-class: the decoder appends them to the swipe
+candidate pool (same endpoint pruning as lexicon words) and SuggestionService
+offers them in typeahead and exempts them from autocorrect. Personal counts blend
+into the swipe frequency prior (`effectiveCount = frequency + boost × personalCount`
+in `rank()`), so the user's own vocabulary wins geometric ties. Feeding the
+correction log back into the tuning grid (§8.3) remains future work.
 
 ---
 

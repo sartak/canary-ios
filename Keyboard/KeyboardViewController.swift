@@ -730,6 +730,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private func recordAutocorrectRejectionIfNeeded() {
         guard !autocorrectWordDisabled, let correction = suggestionService.autocorrectSuggestion else { return }
         usageStore?.recordTapEvent(kind: .autocorrectRejected, typed: suggestionService.lastTypedWord, resolved: correction)
+        // Fast-track: one rejection learns the defended word immediately.
+        suggestionService.learnRejectedWord()
     }
 
     private func handleSwipeEnded(_ path: [CGPoint]) {
@@ -749,6 +751,9 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // Milestone 9: count the commit and stash context so a following
         // suggestion-bar tap can be logged as a swipe correction.
         usageStore?.recordSwipeCommit()
+        // Swiped words never pass through the type-a-boundary word-commit
+        // transition (nothing was typed), so bump personal usage explicitly.
+        suggestionService.recordCommittedWord(result.word)
         pendingSwipeContext = PendingSwipeContext(
             path: path,
             committed: result.word,
