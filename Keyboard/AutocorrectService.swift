@@ -30,7 +30,7 @@ class AutocorrectService {
     /// directly costs less than the delete-generation the corpus query already
     /// does per keystroke.
     func editDistance(_ s1: String, _ s2: String, maxDistance: Int) -> Int {
-        levenshteinDistance(s1, s2, maxDistance: maxDistance)
+        damerauLevenshteinDistance(s1, s2, maxDistance: maxDistance)
     }
 
     /// All verified corrections within `maxDistance`, ordered by edit distance
@@ -96,7 +96,7 @@ class AutocorrectService {
             let candidateWordPtr = sqlite3_column_text(batchStatement, 0)
             let candidateWord = String(cString: candidateWordPtr!)
 
-            let distance = levenshteinDistance(word, candidateWord, maxDistance: exactDistance)
+            let distance = damerauLevenshteinDistance(word, candidateWord, maxDistance: exactDistance)
             if distance == exactDistance {
                 let frequencyRank = Int(sqlite3_column_int64(batchStatement, 1))
                 if !collect(candidateWord, frequencyRank) {
@@ -145,7 +145,15 @@ class AutocorrectService {
         return hashValue
     }
 
-    private func levenshteinDistance(_ s1: String, _ s2: String, maxDistance: Int) -> Int {
+    /// Damerau-Levenshtein (optimal string alignment): insertions, deletions,
+    /// substitutions, and adjacent transpositions each cost one edit — "teh"
+    /// is distance 1 from "the", matching how fingers actually slip. The
+    /// prefix/suffix trimming is transposition-safe: a swapped pair mismatches
+    /// at both positions, so trimming (which only removes equal characters)
+    /// can never split one. No deletes-table rebuild was needed: transposed
+    /// pairs already share deletes, so candidates were always found — they
+    /// were just priced at 2.
+    private func damerauLevenshteinDistance(_ s1: String, _ s2: String, maxDistance: Int) -> Int {
         // Convert to UTF-8 bytes for SIMD operations
         let a = Array(s1.utf8)
         let b = Array(s2.utf8)
@@ -261,7 +269,10 @@ class AutocorrectService {
         if trimmedLenA == 0 { return trimmedLenB }
         if trimmedLenB == 0 { return trimmedLenA }
 
-        // Now compute Levenshtein on the trimmed strings with SIMD-optimized min operations
+        // Now compute the distance on the trimmed strings with SIMD-optimized
+        // min operations. `distances` is the previous DP row; the transposition
+        // case additionally needs the row before that.
+        var previousPrevious: [Int] = []
         var distances = Array(0...trimmedLenB)
 
         for i in 0..<trimmedLenA {
@@ -273,7 +284,14 @@ class AutocorrectService {
 
                 // SIMD-optimized min of 3 values
                 let costs = simd_int4(Int32(distances[j + 1] + 1), Int32(newDistances[j] + 1), Int32(distances[j] + cost), Int32.max)
-                let minDistance = Int(simd_reduce_min(costs))
+                var minDistance = Int(simd_reduce_min(costs))
+
+                // Adjacent transposition costs one edit.
+                if i > 0, j > 0,
+                   a[startA + i] == b[startB + j - 1],
+                   a[startA + i - 1] == b[startB + j] {
+                    minDistance = min(minDistance, previousPrevious[j - 1] + 1)
+                }
 
                 newDistances.append(minDistance)
                 minInRow = min(minInRow, minDistance)
@@ -284,6 +302,7 @@ class AutocorrectService {
                 return 999
             }
 
+            previousPrevious = distances
             distances = newDistances
         }
 

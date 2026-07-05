@@ -348,27 +348,40 @@ class SuggestionService {
     }
 
     /// Physical plausibility of mistyping `candidate` as `typed`. Computable
-    /// only for pure substitutions (equal length): the mean key-center distance
-    /// of the mismatched positions, bucketed against `adjacentKeyThreshold`.
-    /// Length-changing edits and missing geometry land in the middle bucket.
+    /// only for equal-length candidates: an adjacent transposition ("teh" for
+    /// "the") is maximally plausible regardless of key positions — the fingers
+    /// hit the right keys in the wrong order; otherwise the mean key-center
+    /// distance of the mismatched positions, bucketed against
+    /// `adjacentKeyThreshold`. Length-changing edits and missing geometry land
+    /// in the middle bucket.
     private func spatialBucket(typed: String, candidate: String) -> Int {
         guard let keyCenters, keyPitch > 0 else { return 1 }
         let a = Array(typed), b = Array(candidate)
         guard a.count == b.count else { return 1 }
 
-        var total: CGFloat = 0
-        var mismatches = 0
+        var mismatchIndices: [Int] = []
         for i in 0..<a.count where a[i] != b[i] {
+            mismatchIndices.append(i)
+        }
+        guard !mismatchIndices.isEmpty else { return 1 }
+
+        if mismatchIndices.count == 2 {
+            let (first, second) = (mismatchIndices[0], mismatchIndices[1])
+            if second == first + 1, a[first] == b[second], a[second] == b[first] {
+                return 0
+            }
+        }
+
+        var total: CGFloat = 0
+        for i in mismatchIndices {
             guard let typedCenter = keyCenters.centers[a[i]],
                   let candidateCenter = keyCenters.centers[b[i]] else { return 1 }
             let dx = typedCenter.x - candidateCenter.x
             let dy = typedCenter.y - candidateCenter.y
             total += (dx * dx + dy * dy).squareRoot()
-            mismatches += 1
         }
-        guard mismatches > 0 else { return 1 }
 
-        let meanPitches = total / CGFloat(mismatches) / keyPitch
+        let meanPitches = total / CGFloat(mismatchIndices.count) / keyPitch
         return meanPitches <= Self.adjacentKeyThreshold ? 0 : 2
     }
 
