@@ -460,19 +460,23 @@ class SuggestionService {
         let appliedCorrection = lastAppliedCorrection
         lastAppliedCorrection = nil
 
-        let committed = Self.lastCompletedWord(in: before)
+        let (committed, sentenceInitial) = Self.lastCompletedWord(in: before)
         guard !committed.isEmpty else { return }
 
         let matchesTyped = committed.lowercased().hasPrefix(previousPrefix.lowercased())
         let matchesCorrection = appliedCorrection.map { $0 == committed } ?? false
         guard matchesTyped || matchesCorrection else { return }
 
-        recordCommittedWord(committed)
+        // Sentence-initial capitalization is auto-shift noise, not evidence of
+        // how the user cases the word — count the use but keep the stored casing.
+        recordCommittedWord(committed, trustCasing: !sentenceInitial)
     }
 
     /// The word immediately before the trailing boundary character(s) of `before`,
-    /// using the same `isWordCharacter` rule as prefix/suffix extraction.
-    private static func lastCompletedWord(in before: String) -> String {
+    /// using the same `isWordCharacter` rule as prefix/suffix extraction, plus
+    /// whether that word sat at a sentence start (field start, or after a
+    /// sentence terminator) where auto-shift capitalizes regardless of intent.
+    private static func lastCompletedWord(in before: String) -> (word: String, sentenceInitial: Bool) {
         // Skip the trailing boundary character(s) the user just typed.
         var end = before.endIndex
         while end > before.startIndex {
@@ -480,7 +484,7 @@ class SuggestionService {
             if isWordCharacter(in: before, at: prev) { break }
             end = prev
         }
-        guard end > before.startIndex else { return "" }
+        guard end > before.startIndex else { return ("", false) }
 
         // Walk back to the start of that word.
         var start = end
@@ -492,15 +496,32 @@ class SuggestionService {
                 break
             }
         }
-        return String(before[start..<end])
+
+        // Sentence-initial: nothing but spaces between the word and the field
+        // start or the previous sentence's terminator.
+        var probe = start
+        while probe > before.startIndex, before[before.index(before: probe)] == " " {
+            probe = before.index(before: probe)
+        }
+        let sentenceInitial: Bool
+        if probe == before.startIndex {
+            sentenceInitial = true
+        } else {
+            let preceding = before[before.index(before: probe)]
+            sentenceInitial = preceding == "." || preceding == "!" || preceding == "?" || preceding == "\n"
+        }
+
+        return (String(before[start..<end]), sentenceInitial)
     }
 
     /// Records one committed use of `word`: bumps personal usage and, when the
     /// count crosses the promotion threshold for a word the lexicon doesn't know
-    /// and hasn't already learned, promotes it to the learned set.
-    func recordCommittedWord(_ word: String) {
+    /// and hasn't already learned, promotes it to the learned set. Pass
+    /// `trustCasing: false` when the word's capitalization is not the user's own
+    /// doing (sentence-start auto-shift, swipe-inserted casing).
+    func recordCommittedWord(_ word: String, trustCasing: Bool = true) {
         guard let store = usageStore else { return }
-        let count = store.bumpWordUsage(word)
+        let count = store.bumpWordUsage(word, trustCasing: trustCasing)
         guard count >= LearningTuning.promotionThreshold else { return }
         let lower = word.lowercased()
         guard !store.isLearned(lower), !lexiconContains(lower) else { return }

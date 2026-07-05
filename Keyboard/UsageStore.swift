@@ -170,21 +170,31 @@ final class UsageStore {
     // MARK: - Word usage + learned words (Milestone 9 stage 2)
 
     /// Records one committed use of `word`, incrementing its lifetime personal
-    /// count and refreshing its stored casing. Returns the new count, or 0 on a
-    /// hygiene-guard rejection or any store failure. Intentionally silent — this
-    /// fires once per committed word and echoing every bump would be far too
-    /// chatty; only promotions (`markLearned`) print.
+    /// count. `trustCasing` controls whether this use also refreshes the stored
+    /// casing: sentence-initial commits pass false because auto-shift
+    /// capitalization is noise, not evidence of how the user cases the word
+    /// (mid-sentence "Claude" is deliberate; sentence-start "The" is not).
+    /// Returns the new count, or 0 on a hygiene-guard rejection or any store
+    /// failure. Intentionally quiet — this fires once per committed word;
+    /// only promotions and learned-casing changes print.
     @discardableResult
-    func bumpWordUsage(_ word: String) -> Int {
+    func bumpWordUsage(_ word: String, trustCasing: Bool = true) -> Int {
         guard Self.isLearnableWord(word), let db = connection() else { return 0 }
         let lower = word.lowercased()
 
+        let sql = trustCasing
+            ? """
+              INSERT INTO word_usage (word_lower, word, count, last_used) VALUES (?, ?, 1, ?)
+              ON CONFLICT(word_lower) DO UPDATE SET
+                  count = count + 1, word = excluded.word, last_used = excluded.last_used
+              """
+            : """
+              INSERT INTO word_usage (word_lower, word, count, last_used) VALUES (?, ?, 1, ?)
+              ON CONFLICT(word_lower) DO UPDATE SET
+                  count = count + 1, last_used = excluded.last_used
+              """
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, """
-            INSERT INTO word_usage (word_lower, word, count, last_used) VALUES (?, ?, 1, ?)
-            ON CONFLICT(word_lower) DO UPDATE SET
-                count = count + 1, word = excluded.word, last_used = excluded.last_used
-            """, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
             print("UsageStore: could not prepare word usage upsert")
             return 0
         }
@@ -202,7 +212,36 @@ final class UsageStore {
 
         let newCount = (loadPersonalCounts()[lower] ?? 0) + 1
         personalCounts?[lower] = newCount
+        if trustCasing {
+            refreshLearnedCasing(word, lower: lower)
+        }
         return newCount
+    }
+
+    /// Propagates a trusted casing change to the learned set, so a word learned
+    /// as "claude" upgrades to "Claude" once the user cases it that way
+    /// mid-sentence (and can downgrade again if they stop).
+    private func refreshLearnedCasing(_ word: String, lower: String) {
+        guard let stored = loadLearned()[lower], stored != word, let db = connection() else { return }
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "UPDATE learned_words SET word = ? WHERE word_lower = ?",
+                                 -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
+            print("UsageStore: could not prepare learned casing update")
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, word, -1, transient)
+        sqlite3_bind_text(statement, 2, lower, -1, transient)
+
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            print("UsageStore: learned casing update failed")
+            return
+        }
+        learned?[lower] = word
+        print("UsageStore: learned casing '\(stored)' -> '\(word)'")
     }
 
     /// Personal usage count for a word (0 if never seen). Backed by an in-memory

@@ -753,7 +753,9 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         usageStore?.recordSwipeCommit()
         // Swiped words never pass through the type-a-boundary word-commit
         // transition (nothing was typed), so bump personal usage explicitly.
-        suggestionService.recordCommittedWord(result.word)
+        // Their casing comes from stored casing + shift state, not from the
+        // user's fingers — count the use, don't treat it as casing evidence.
+        suggestionService.recordCommittedWord(result.word, trustCasing: false)
         pendingSwipeContext = PendingSwipeContext(
             path: path,
             committed: result.word,

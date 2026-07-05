@@ -757,7 +757,12 @@ swipe commits as the denominator for a correction rate.
 by a one-tap autocorrect-rejection fast-track that learns a defended word
 immediately. Learned words are first-class: the decoder appends them to the swipe
 candidate pool (same endpoint pruning as lexicon words) and SuggestionService
-offers them in typeahead and exempts them from autocorrect. Personal counts blend
+offers them in typeahead and exempts them from autocorrect. Stored casing follows
+the lexicon's proper-noun convention (typing lowercase preserves it, so a learned
+"Claude" suggests and swipes as "Claude") and is updated only from mid-sentence
+commits — sentence-initial capitalization is auto-shift noise, and swipe-inserted
+casing is circular — so deliberate casing wins and ordinary words don't get stuck
+capitalized. Personal counts blend
 into the swipe frequency prior (`effectiveCount = frequency + boost × personalCount`
 in `rank()`), so the user's own vocabulary wins geometric ties. Feeding the
 correction log back into the tuning grid (§8.3) remains future work.
