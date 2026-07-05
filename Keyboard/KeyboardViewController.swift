@@ -141,6 +141,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.characterFrequencies = characterFrequencies
         keyboardTouchView.keyData = createKeyData()
         keyboardTouchView.setNeedsDisplay()
+        pushKeyGeometryIfAlpha()
 
         keyboardTouchView.onKeyTouchDown = { [weak self] keyData in
             self?.handleKeyTouchDown(keyData)
@@ -933,8 +934,17 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView.characterFrequencies = characterFrequencies
         keyboardTouchView.keyData = createKeyData()
         keyboardTouchView.setNeedsDisplay()
+        pushKeyGeometryIfAlpha()
 
         editingBarView.updateLayout(for: effectiveShiftState, containerWidth: view.bounds.width)
+    }
+
+    /// Keeps SuggestionService's letter-key geometry current for correction
+    /// ranking. Only the alpha layer's keyData maps letters to centers; other
+    /// layers keep the last alpha geometry.
+    private func pushKeyGeometryIfAlpha() {
+        guard currentLayer == .alpha else { return }
+        suggestionService.updateKeyGeometry(keyCenters: currentKeyCenters(), keyPitch: keyPitch)
     }
 
     private func rebuildKeyboard() {

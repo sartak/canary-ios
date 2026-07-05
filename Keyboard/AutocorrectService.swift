@@ -33,18 +33,32 @@ class AutocorrectService {
         levenshteinDistance(s1, s2, maxDistance: maxDistance)
     }
 
-    func findBestCorrection(for word: String, maxDistance: Int, task: DispatchWorkItem? = nil) -> String? {
+    /// All verified corrections within `maxDistance`, ordered by edit distance
+    /// then corpus frequency, up to `limit`. The caller re-ranks with signals
+    /// SymSpell doesn't know about (key geometry, learned words), so `limit`
+    /// should be generous relative to how many corrections are displayed.
+    func findCorrections(for word: String, maxDistance: Int, limit: Int,
+                         task: DispatchWorkItem? = nil) -> [(word: String, distance: Int, frequencyRank: Int)] {
+        var results: [(word: String, distance: Int, frequencyRank: Int)] = []
+        var seen: Set<String> = []
         for distance in 1...maxDistance {
-            if let result = querySymSpell(word: word, exactDistance: distance, task: task) {
-                return result
+            querySymSpell(word: word, exactDistance: distance, task: task) { candidate, frequencyRank in
+                if seen.insert(candidate).inserted {
+                    results.append((candidate, distance, frequencyRank))
+                }
+                return results.count < limit
             }
+            if results.count >= limit { break }
         }
-        return nil
+        return results
     }
 
-    private func querySymSpell(word: String, exactDistance: Int, task: DispatchWorkItem?) -> String? {
+    /// Runs the delete-hash lookup for one exact distance, invoking `collect`
+    /// with each verified candidate (in frequency order) until it returns false.
+    private func querySymSpell(word: String, exactDistance: Int, task: DispatchWorkItem?,
+                               collect: (String, Int) -> Bool) {
         if task?.isCancelled == true {
-            return nil
+            return
         }
 
         let deletes = generateDeletes(word: word, maxEditDistance: exactDistance)
@@ -67,7 +81,7 @@ class AutocorrectService {
             var newStatement: OpaquePointer?
             guard sqlite3_prepare_v2(db, batchQuery, -1, &newStatement, nil) == SQLITE_OK,
                   let statement = newStatement else {
-                return nil
+                return
             }
 
             batchQueryCache[hashCount] = statement
@@ -78,26 +92,21 @@ class AutocorrectService {
             sqlite3_bind_int64(batchStatement, Int32(index + 1), deleteHash)
         }
 
-        while true {
-            let stepResult = sqlite3_step(batchStatement)
-            if stepResult == SQLITE_ROW {
-                let candidateWordPtr = sqlite3_column_text(batchStatement, 0)
-                let candidateWord = String(cString: candidateWordPtr!)
+        while sqlite3_step(batchStatement) == SQLITE_ROW {
+            let candidateWordPtr = sqlite3_column_text(batchStatement, 0)
+            let candidateWord = String(cString: candidateWordPtr!)
 
-                let distance = levenshteinDistance(word, candidateWord, maxDistance: exactDistance)
-                if distance == exactDistance {
-                    sqlite3_reset(batchStatement)
-                    sqlite3_clear_bindings(batchStatement)
-                    return candidateWord
+            let distance = levenshteinDistance(word, candidateWord, maxDistance: exactDistance)
+            if distance == exactDistance {
+                let frequencyRank = Int(sqlite3_column_int64(batchStatement, 1))
+                if !collect(candidateWord, frequencyRank) {
+                    break
                 }
-            } else {
-                break
             }
         }
 
         sqlite3_reset(batchStatement)
         sqlite3_clear_bindings(batchStatement)
-        return nil
     }
 
     private func generateDeletes(word: String, maxEditDistance: Int) -> Set<String> {

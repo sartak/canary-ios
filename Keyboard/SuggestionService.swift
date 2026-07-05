@@ -38,6 +38,25 @@ class SuggestionService {
     /// Raw word the user has actually typed (the current prefix), captured on each
     /// context update so autocorrect events can be logged with what was typed.
     private(set) var lastTypedWord: String = ""
+    /// Alpha-layer key geometry, pushed by the controller whenever key frames
+    /// change, so correction ranking can prefer physically plausible
+    /// substitutions (the mistyped key's neighbors). nil until first pushed;
+    /// ranking falls back to frequency alone.
+    private var keyCenters: KeyCenters?
+    private var keyPitch: CGFloat = 0
+    /// Runner-up corrections behind `autocorrectSuggestion` (already
+    /// smart-capitalized), surfaced in the suggestion bar for manual picking.
+    private var alternativeCorrections: [String] = []
+
+    /// Mean key-center distance (in key pitches) at or below which a wrong
+    /// character counts as physically plausible fat-fingering. One key pitch is
+    /// an immediate neighbor; 1.5 admits the diagonal ring.
+    private static let adjacentKeyThreshold: CGFloat = 1.5
+
+    func updateKeyGeometry(keyCenters: KeyCenters, keyPitch: CGFloat) {
+        self.keyCenters = keyCenters
+        self.keyPitch = keyPitch
+    }
     /// The prefix from the PREVIOUS `updateContext`, used to detect a word commit:
     /// a non-empty previous prefix followed by an empty one means the user just
     /// typed a word boundary and completed a word (see `detectWordCommit`).
@@ -183,6 +202,10 @@ class SuggestionService {
 
         let (typeahead, exactMatch) = updateTypeahead(prefix: prefix, suffix: suffix, shiftState: shiftState)
 
+        // updateAutocorrect repopulates these when it proposes a correction;
+        // every other path through the branch below leaves them empty.
+        alternativeCorrections = []
+
         if autocorrectEnabled {
             if let exactMatch = exactMatch {
                 // We have an exact match, do smart capitalization
@@ -215,7 +238,16 @@ class SuggestionService {
             typeahead
         }
 
-        delegate?.suggestionService(self, didUpdateSuggestions: filteredTypeahead, autocorrect: autocorrectSuggestion, frequencies: frequencies)
+        // Runner-up corrections are manually pickable from the bar, ahead of
+        // literal-prefix completions (which rarely exist for a typo). The top
+        // correction stays in the dedicated autocorrect slot.
+        let alternativeItems: [(String, [InputAction])] = alternativeCorrections.map { word in
+            (word, createInputActions(for: word, prefix: prefix, suffix: suffix, excludeTrailingSpace: false))
+        }
+        let alternativeWords = Set(alternativeItems.map { $0.0 })
+        let combinedTypeahead = alternativeItems + filteredTypeahead.filter { !alternativeWords.contains($0.0) }
+
+        delegate?.suggestionService(self, didUpdateSuggestions: combinedTypeahead, autocorrect: autocorrectSuggestion, frequencies: frequencies)
     }
 
     private func updateAutocorrect(prefix: String, suffix: String, autocorrectEnabled: Bool = true, shiftState: ShiftState) -> String? {
@@ -240,65 +272,104 @@ class SuggestionService {
         }
 
         let startTime = CFAbsoluteTimeGetCurrent()
-        let (correction, learnedWon) = findBestCorrectionIncludingLearned(for: wordToCorrect.lowercased(), maxDistance: 2)
+        let corrections = rankedCorrections(for: wordToCorrect.lowercased(), maxDistance: 2, limit: 4)
         let endTime = CFAbsoluteTimeGetCurrent()
         let duration = (endTime - startTime) * 1000 // Convert to milliseconds
 
-        if let correction = correction {
-            let finalCorrection = applySmartCapitalization(word: correction + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
-            let source = learnedWon ? " (learned)" : ""
-            print("AutocorrectService: '\(prefix.lowercased())' -> '\(finalCorrection)'\(source) in \(String(format: "%.3f", duration))ms")
-            return finalCorrection
-        } else {
+        guard let best = corrections.first else {
+            alternativeCorrections = []
             print("AutocorrectService: '\(prefix.lowercased())' -> no correction in \(String(format: "%.3f", duration))ms")
             return nil
         }
+
+        let finalCorrection = applySmartCapitalization(word: best.word + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
+        alternativeCorrections = corrections.dropFirst().map { candidate in
+            applySmartCapitalization(word: candidate.word + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
+        }
+
+        let source = best.learned ? " (learned)" : ""
+        let alts = alternativeCorrections.isEmpty ? "" : " alts=[\(alternativeCorrections.joined(separator: ", "))]"
+        print("AutocorrectService: '\(prefix.lowercased())' -> '\(finalCorrection)'\(source)\(alts) in \(String(format: "%.3f", duration))ms")
+        return finalCorrection
     }
 
-    /// SymSpell correction over the corpus, merged with a direct scan of the
-    /// learned set. The learned set is tiny, so verifying every entry with the
-    /// same edit-distance metric costs less than the corpus query's own
-    /// delete-generation — no parallel deletes table needed. Ranking: smaller
-    /// edit distance wins; at equal distance the learned word wins (personal
-    /// vocabulary bias — "clauxe" corrects to a learned "Claude", not
-    /// "clause"); among learned ties, the higher personal count wins.
-    private func findBestCorrectionIncludingLearned(for wordLower: String,
-                                                    maxDistance: Int) -> (word: String?, learned: Bool) {
-        var learnedBest: (word: String, distance: Int, count: Int)?
+    private struct CorrectionCandidate {
+        let word: String
+        let distance: Int
+        /// 0 = physically adjacent substitutions, 1 = plausibility unknown
+        /// (length changed, or no geometry), 2 = far substitutions.
+        let spatialBucket: Int
+        let learned: Bool
+        let frequencyRank: Int
+        let personalCount: Int
+    }
+
+    /// SymSpell corrections over the corpus merged with a direct scan of the
+    /// learned set (which is tiny, so verifying every entry with the same
+    /// edit-distance metric costs less than the corpus query's own
+    /// delete-generation — no parallel deletes table needed). Ranking is
+    /// lexicographic so every decision is explainable: smaller edit distance;
+    /// then physical plausibility (an x→d slip beats an x→s reach when d is
+    /// the neighboring key); then learned over corpus (personal vocabulary
+    /// bias); then personal count / corpus frequency.
+    private func rankedCorrections(for wordLower: String, maxDistance: Int,
+                                   limit: Int) -> [(word: String, learned: Bool)] {
+        var candidates = autocorrectService
+            .findCorrections(for: wordLower, maxDistance: maxDistance, limit: 8)
+            .map { corpus in
+                CorrectionCandidate(word: corpus.word, distance: corpus.distance,
+                                    spatialBucket: spatialBucket(typed: wordLower, candidate: corpus.word.lowercased()),
+                                    learned: false, frequencyRank: corpus.frequencyRank,
+                                    personalCount: 0)
+            }
+
         if let store = usageStore {
             for candidate in store.learnedWords() {
                 let candidateLower = candidate.lowercased()
                 if candidateLower == wordLower { continue }  // exact match is exempted upstream
                 let distance = autocorrectService.editDistance(wordLower, candidateLower, maxDistance: maxDistance)
                 guard distance <= maxDistance else { continue }
-                let count = store.personalCount(for: candidateLower)
-                if let current = learnedBest {
-                    if distance < current.distance || (distance == current.distance && count > current.count) {
-                        learnedBest = (candidate, distance, count)
-                    }
-                } else {
-                    learnedBest = (candidate, distance, count)
-                }
+                candidates.append(CorrectionCandidate(
+                    word: candidate, distance: distance,
+                    spatialBucket: spatialBucket(typed: wordLower, candidate: candidateLower),
+                    learned: true, frequencyRank: 0,
+                    personalCount: store.personalCount(for: candidateLower)))
             }
         }
 
-        // A learned word at distance 1 cannot be beaten (ties go to learned).
-        if let learnedBest, learnedBest.distance == 1 {
-            return (learnedBest.word, true)
+        candidates.sort { lhs, rhs in
+            if lhs.distance != rhs.distance { return lhs.distance < rhs.distance }
+            if lhs.spatialBucket != rhs.spatialBucket { return lhs.spatialBucket < rhs.spatialBucket }
+            if lhs.learned != rhs.learned { return lhs.learned }
+            if lhs.learned { return lhs.personalCount > rhs.personalCount }
+            return lhs.frequencyRank < rhs.frequencyRank
         }
+        return candidates.prefix(limit).map { ($0.word, $0.learned) }
+    }
 
-        let corpus = autocorrectService.findBestCorrection(for: wordLower, maxDistance: maxDistance)
-        switch (corpus, learnedBest) {
-        case (nil, nil):
-            return (nil, false)
-        case (nil, let learned?):
-            return (learned.word, true)
-        case (let corpus?, nil):
-            return (corpus, false)
-        case (let corpus?, let learned?):
-            let corpusDistance = autocorrectService.editDistance(wordLower, corpus.lowercased(), maxDistance: maxDistance)
-            return corpusDistance < learned.distance ? (corpus, false) : (learned.word, true)
+    /// Physical plausibility of mistyping `candidate` as `typed`. Computable
+    /// only for pure substitutions (equal length): the mean key-center distance
+    /// of the mismatched positions, bucketed against `adjacentKeyThreshold`.
+    /// Length-changing edits and missing geometry land in the middle bucket.
+    private func spatialBucket(typed: String, candidate: String) -> Int {
+        guard let keyCenters, keyPitch > 0 else { return 1 }
+        let a = Array(typed), b = Array(candidate)
+        guard a.count == b.count else { return 1 }
+
+        var total: CGFloat = 0
+        var mismatches = 0
+        for i in 0..<a.count where a[i] != b[i] {
+            guard let typedCenter = keyCenters.centers[a[i]],
+                  let candidateCenter = keyCenters.centers[b[i]] else { return 1 }
+            let dx = typedCenter.x - candidateCenter.x
+            let dy = typedCenter.y - candidateCenter.y
+            total += (dx * dx + dy * dy).squareRoot()
+            mismatches += 1
         }
+        guard mismatches > 0 else { return 1 }
+
+        let meanPitches = total / CGFloat(mismatches) / keyPitch
+        return meanPitches <= Self.adjacentKeyThreshold ? 0 : 2
     }
 
     private func updateTypeahead(prefix: String, suffix: String, shiftState: ShiftState) -> ([(String, [InputAction])], String?) {

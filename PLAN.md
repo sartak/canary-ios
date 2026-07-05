@@ -115,7 +115,7 @@
 - [ ] Implement memory pressure response (release caches, unload unused data)
 
 ### Smarter Autocorrect
-- [ ] Add post-processing to pick closest match based on keyboard distance
+- [x] Add post-processing to pick closest match based on keyboard distance
 - [ ] Fix smart capitalization: "WRNg" autocorrects to "WROng" but should be "WRoNg"
 - [ ] When the cursor is in the middle of a word, use suffix in autocorrect
 
