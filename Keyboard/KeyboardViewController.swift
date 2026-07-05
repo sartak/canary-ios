@@ -27,10 +27,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private var pendingRefresh = false
     var maybePunctuating = false
     private var autocorrectAppDisabled = false
-    private var autocorrectUserDisabled = false
+    private var autocorrectUserDisabled = UserDefaults.standard.bool(forKey: "autocorrectUserDisabled")
     var autocorrectWordDisabled = false
     var undoActions: [InputAction]?
-    private var debugVisualizationEnabled = false
+    private var debugVisualizationEnabled = UserDefaults.standard.bool(forKey: "debugVisualizationEnabled")
 
     /// Local usage/correction log (Milestone 9). Logging only — no typing
     /// behavior changes based on it. Created eagerly (cheap — resolves a path);
@@ -1048,11 +1048,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         switch config {
         case .toggleAutocorrect:
             autocorrectUserDisabled.toggle()
+            UserDefaults.standard.set(autocorrectUserDisabled, forKey: "autocorrectUserDisabled")
             keyboardTouchView?.autocorrectEnabled = !autocorrectUserDisabled
             keyboardTouchView?.setNeedsDisplay()
             refreshSuggestions()
         case .toggleDebugVisualization:
             debugVisualizationEnabled.toggle()
+            UserDefaults.standard.set(debugVisualizationEnabled, forKey: "debugVisualizationEnabled")
             keyboardTouchView?.showHitboxDebug = debugVisualizationEnabled
             keyboardTouchView?.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
             editingBarView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
