@@ -110,6 +110,77 @@ final class DictionaryStore {
         return true
     }
 
+    // MARK: - Shortcuts
+
+    struct Shortcut: Identifiable {
+        let trigger: String
+        let triggerLower: String
+        let phrase: String
+        var id: String { triggerLower }
+    }
+
+    /// Custom shortcuts, alphabetical by trigger. iOS-provided text
+    /// replacements (Settings) are not listed here — they are managed in
+    /// Settings and only mirrored per keyboard session.
+    func shortcuts() -> [Shortcut] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT trigger, trigger_lower, phrase FROM shortcuts ORDER BY trigger_lower ASC", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var result: [Shortcut] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let triggerPtr = sqlite3_column_text(statement, 0),
+                  let lowerPtr = sqlite3_column_text(statement, 1),
+                  let phrasePtr = sqlite3_column_text(statement, 2) else { continue }
+            result.append(Shortcut(
+                trigger: String(cString: triggerPtr),
+                triggerLower: String(cString: lowerPtr),
+                phrase: String(cString: phrasePtr)
+            ))
+        }
+        return result
+    }
+
+    /// Upserts a custom shortcut. Returns false on a hygiene failure.
+    /// Hygiene mirrors UsageStore's validators (duplicated by design — the
+    /// targets share no code): trigger 2–24 chars of letters/digits/interior
+    /// apostrophes with at least one letter and no whitespace; phrase trimmed,
+    /// single-line, 1–200 chars, not equal to the trigger.
+    @discardableResult
+    func addShortcut(trigger: String, phrase: String) -> Bool {
+        let trimmedTrigger = trigger.trimmingCharacters(in: .whitespaces)
+        let trimmedPhrase = phrase.trimmingCharacters(in: .whitespaces)
+        guard Self.isValidShortcutTrigger(trimmedTrigger),
+              !trimmedPhrase.isEmpty, trimmedPhrase.count <= 200,
+              !trimmedPhrase.contains(where: \.isNewline),
+              trimmedTrigger.lowercased() != trimmedPhrase.lowercased() else { return false }
+        run("""
+            INSERT INTO shortcuts (trigger_lower, trigger, phrase, created_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(trigger_lower) DO UPDATE SET
+                trigger = excluded.trigger, phrase = excluded.phrase
+            """,
+            texts: [trimmedTrigger.lowercased(), trimmedTrigger, trimmedPhrase],
+            doubles: [Date().timeIntervalSince1970])
+        return true
+    }
+
+    func removeShortcut(_ triggerLower: String) {
+        run("DELETE FROM shortcuts WHERE trigger_lower = ?", texts: [triggerLower])
+    }
+
+    private static func isValidShortcutTrigger(_ trigger: String) -> Bool {
+        guard trigger.count >= 2, trigger.count <= 24 else { return false }
+        for (offset, character) in trigger.enumerated() {
+            if character.isLetter || character.isNumber { continue }
+            if character == "'", offset > 0, offset < trigger.count - 1 { continue }
+            return false
+        }
+        return trigger.contains { $0.isLetter }
+    }
+
     /// Mirror of the keyboard's word hygiene (UsageStore.isLearnableWord).
     /// Duplicated by design: the targets share no code, and a mismatch is
     /// merely cosmetic — the keyboard's reads don't re-validate.

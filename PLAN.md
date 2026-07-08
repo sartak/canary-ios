@@ -126,7 +126,7 @@
 - [x] Create shortcut definition and storage system
 - [x] Implement shortcut detection during typing
 - [x] Add automatic expansion when shortcuts are typed
-- [ ] Create UI for managing custom shortcuts in main app
+- [x] Create UI for managing custom shortcuts in main app
 - [x] Use shared container to pass settings between app and keyboard extension
 
 ### Context-Aware Features

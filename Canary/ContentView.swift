@@ -17,6 +17,11 @@ struct ContentView: View {
                     } label: {
                         Label("Dictionary", systemImage: "book")
                     }
+                    NavigationLink {
+                        ShortcutsView()
+                    } label: {
+                        Label("Shortcuts", systemImage: "arrow.right.circle")
+                    }
                 }
             }
             .navigationTitle("Canary")
