@@ -27,10 +27,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private var pendingRefresh = false
     var maybePunctuating = false
     private var autocorrectAppDisabled = false
-    private var autocorrectUserDisabled = UserDefaults.standard.bool(forKey: "autocorrectUserDisabled")
+    private var autocorrectUserDisabled = KeyboardSettings.autocorrectUserDisabled
     var autocorrectWordDisabled = false
     var undoActions: [InputAction]?
-    private var debugVisualizationEnabled = UserDefaults.standard.bool(forKey: "debugVisualizationEnabled")
+    private var debugVisualizationEnabled = KeyboardSettings.debugVisualizationEnabled
 
     /// Local usage/correction log (Milestone 9). Logging only — no typing
     /// behavior changes based on it. Created eagerly (cheap — resolves a path);
@@ -57,7 +57,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     /// the debug toggle), persisted across sessions: letter keys become
     /// tap-inert so entering letters requires swiping — for unlearning tap
     /// muscle memory. Swiping itself is always available on the alpha layer.
-    private var swipeOnlyModeEnabled = UserDefaults.standard.bool(forKey: "swipeOnlyMode")
+    private var swipeOnlyModeEnabled = KeyboardSettings.swipeOnlyMode
     private var characterFrequencies: CharacterDistribution?
     private var charBeforeCursor: Character?
     private var backspaceShiftState: ShiftState = .unshifted
@@ -1115,13 +1115,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         switch config {
         case .toggleAutocorrect:
             autocorrectUserDisabled.toggle()
-            UserDefaults.standard.set(autocorrectUserDisabled, forKey: "autocorrectUserDisabled")
+            KeyboardSettings.autocorrectUserDisabled = autocorrectUserDisabled
             keyboardTouchView?.autocorrectEnabled = !autocorrectUserDisabled
             keyboardTouchView?.setNeedsDisplay()
             refreshSuggestions()
         case .toggleDebugVisualization:
             debugVisualizationEnabled.toggle()
-            UserDefaults.standard.set(debugVisualizationEnabled, forKey: "debugVisualizationEnabled")
+            KeyboardSettings.debugVisualizationEnabled = debugVisualizationEnabled
             keyboardTouchView?.showHitboxDebug = debugVisualizationEnabled
             keyboardTouchView?.showDebugSwipePath = debugVisualizationEnabled && (currentLayer == .alpha)
             editingBarView?.setDebugVisualizationEnabled(debugVisualizationEnabled)
@@ -1133,7 +1133,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         case .toggleSwipeOnly:
             swipeOnlyModeEnabled.toggle()
             print("KeyboardViewController: swipe-only mode toggled \(swipeOnlyModeEnabled ? "ON" : "OFF") (layer: \(currentLayer))")
-            UserDefaults.standard.set(swipeOnlyModeEnabled, forKey: "swipeOnlyMode")
+            KeyboardSettings.swipeOnlyMode = swipeOnlyModeEnabled
             keyboardTouchView?.swipeOnlyActive = swipeOnlyEffective
             keyboardTouchView?.swipeOnlyToggleOn = swipeOnlyModeEnabled
             keyboardTouchView?.setNeedsDisplay()

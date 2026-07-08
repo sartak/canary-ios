@@ -61,6 +61,7 @@
 		54D2F37274F456F5DEF29B17 /* Exceptions for "Keyboard" folder in "CanaryTests" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				KeyboardSettings.swift,
 				PathGeometry.swift,
 				SwipeDecoder.swift,
 				SwipeLexicon.swift,
@@ -69,6 +70,13 @@
 				UsageStore.swift,
 			);
 			target = 29F087FC2E3923C500B0301D /* CanaryTests */;
+		};
+		9D1FEA30F55648953C6DDE62 /* Exceptions for "Keyboard" folder in "Canary" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				KeyboardSettings.swift,
+			);
+			target = 29F087E82E3923C400B0301D /* Canary */;
 		};
 		298BE5CA2E39299800D66C92 /* Exceptions for "Keyboard" folder in "Keyboard" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -92,6 +100,7 @@
 			exceptions = (
 				298BE5CA2E39299800D66C92 /* Exceptions for "Keyboard" folder in "Keyboard" target */,
 				54D2F37274F456F5DEF29B17 /* Exceptions for "Keyboard" folder in "CanaryTests" target */,
+				9D1FEA30F55648953C6DDE62 /* Exceptions for "Keyboard" folder in "Canary" target */,
 			);
 			path = Keyboard;
 			sourceTree = "<group>";

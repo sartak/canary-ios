@@ -127,7 +127,7 @@
 - [ ] Implement shortcut detection during typing
 - [ ] Add automatic expansion when shortcuts are typed
 - [ ] Create UI for managing custom shortcuts in main app
-- [ ] Use shared container to pass settings between app and keyboard extension
+- [x] Use shared container to pass settings between app and keyboard extension
 
 ### Context-Aware Features
 - [ ] Add context-aware key alternates (e.g., domain suffixes for email fields)
