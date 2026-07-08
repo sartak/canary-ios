@@ -107,7 +107,7 @@
 - [x] Access UILexicon for user's personal dictionary and learned words
 - [x] Implement local storage system (SQLite)
 - [x] Use user dictionary for typeahead and typo correction
-- [ ] Add dictionary management to the main app
+- [x] Add dictionary management to the main app
 - [x] Learn a word when the user rejects an autocorrect of it
 - [x] Track swipe accuracy based on whether word was corrected, for fine-tuning
 - [x] Add frequency tracking for typed words

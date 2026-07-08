@@ -102,6 +102,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
 
+        // The containing app may have edited the shared dictionary while this
+        // process was alive; start the session on its version of the truth.
+        usageStore?.invalidateCaches()
+
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (traitEnvironment: UITraitEnvironment, previousTraitCollection: UITraitCollection) in
             self?.keyboardTouchView?.setNeedsDisplay()
         }

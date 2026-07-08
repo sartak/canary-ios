@@ -74,20 +74,43 @@ final class UsageStore {
     /// iOS-provided words for this session (UILexicon), lowercased → provided
     /// casing. In-memory only; see setExternalWords.
     private var externalWords: [String: String] = [:]
+    /// Un-learn tombstones (dictionary UI removals), lazily loaded like the
+    /// learned cache. A tombstoned word cannot re-promote by usage count.
+    private var unlearned: Set<String>?
 
     /// Upper bound on session words accepted from UILexicon.
     private static let externalWordCap = 2000
 
-    /// Resolves the on-disk path; does NOT open the database yet.
+    /// App Group shared with the containing app so its dictionary UI can see
+    /// this database. Keyboard extensions can only ACCESS the group container
+    /// when the user grants Full Access; `containerURL` returns a path either
+    /// way, so usability is determined by whether the open succeeds (see
+    /// openAndProvision's fallback).
+    static let appGroupID = "group.net.rpglanguage.Canary"
+
+    /// The extension-private location usage.db lived at before the App Group;
+    /// the migration source, and the fallback when Full Access is off.
+    private let legacyDBURL: URL?
+
+    /// Resolves the on-disk paths; does NOT open the database yet.
     init?() {
-        guard let support = try? FileManager.default.url(
+        let legacy = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: false
-        ) else {
-            print("UsageStore: could not resolve application support directory")
+        ))?.appendingPathComponent("usage.db")
+
+        if let group = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: Self.appGroupID
+        ) {
+            self.dbURL = group.appendingPathComponent("usage.db")
+            self.legacyDBURL = legacy
+        } else if let legacy {
+            self.dbURL = legacy
+            self.legacyDBURL = nil
+        } else {
+            print("UsageStore: could not resolve a database location")
             return nil
         }
-        self.dbURL = support.appendingPathComponent("usage.db")
     }
 
     deinit {
@@ -263,6 +286,14 @@ final class UsageStore {
         guard Self.isLearnableWord(word), let db = connection() else { return }
         let lower = word.lowercased()
 
+        // An un-learn tombstone (dictionary UI removal) blocks re-promotion by
+        // usage count — except for the rejection fast-track: explicitly
+        // defending the word from an autocorrect overrides the earlier removal.
+        if loadUnlearned().contains(lower) {
+            guard reason == "rejection" else { return }
+            removeTombstone(lower, db: db)
+        }
+
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, """
             INSERT INTO learned_words (word_lower, word, learned_at) VALUES (?, ?, ?)
@@ -340,6 +371,7 @@ final class UsageStore {
     func releaseMemory() {
         personalCounts = nil
         learned = nil
+        unlearned = nil
         if let db {
             sqlite3_db_release_memory(db)
         }
@@ -388,6 +420,45 @@ final class UsageStore {
         return result
     }
 
+    @discardableResult
+    private func loadUnlearned() -> Set<String> {
+        if let unlearned { return unlearned }
+        var result: Set<String> = []
+        if let db = connection() {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "SELECT word_lower FROM unlearned_words", -1, &stmt, nil) == SQLITE_OK,
+               let statement = stmt {
+                while sqlite3_step(statement) == SQLITE_ROW {
+                    if let lowerPtr = sqlite3_column_text(statement, 0) {
+                        result.insert(String(cString: lowerPtr))
+                    }
+                }
+                sqlite3_finalize(statement)
+            }
+        }
+        unlearned = result
+        return result
+    }
+
+    private func removeTombstone(_ lower: String, db: OpaquePointer) {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "DELETE FROM unlearned_words WHERE word_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, lower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        _ = sqlite3_step(statement)
+        unlearned?.remove(lower)
+    }
+
+    /// The app process may have edited the database (un-learn, add, casing)
+    /// while this keyboard process was alive; drop the caches so the next
+    /// read sees its changes. Called when the keyboard (re)appears.
+    func invalidateCaches() {
+        personalCounts = nil
+        learned = nil
+        unlearned = nil
+    }
+
     /// Word hygiene: 2–24 characters, letters and interior apostrophes only
     /// (mirrors `SuggestionService.isWordCharacter`). Anything else is silently
     /// ignored so we never learn punctuation, numbers, or fragments.
@@ -421,21 +492,67 @@ final class UsageStore {
     }
 
     private func openAndProvision() -> OpaquePointer? {
-        let directory = dbURL.deletingLastPathComponent()
+        migrateLegacyDatabaseIfNeeded()
+        if let opened = open(at: dbURL) {
+            return opened
+        }
+        // Group container unusable (Full Access off): the keyboard keeps
+        // working from the extension-private location; only the app's
+        // dictionary UI loses sight of the data.
+        if let legacyDBURL, legacyDBURL != dbURL {
+            print("UsageStore: group container unusable; falling back to the private container")
+            return open(at: legacyDBURL)
+        }
+        return nil
+    }
+
+    private func open(at url: URL) -> OpaquePointer? {
+        let directory = url.deletingLastPathComponent()
         if !FileManager.default.fileExists(atPath: directory.path) {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
         var handle: OpaquePointer?
-        guard sqlite3_open(dbURL.path, &handle) == SQLITE_OK, let opened = handle else {
-            print("UsageStore: could not open \(dbURL.path)")
+        guard sqlite3_open(url.path, &handle) == SQLITE_OK, let opened = handle else {
+            print("UsageStore: could not open \(url.path)")
             if handle != nil { sqlite3_close(handle) }
             return nil
         }
 
         exec(opened, "PRAGMA journal_mode=WAL;")
+        // The app process shares this database now; briefly wait out its
+        // writes instead of failing statements.
+        exec(opened, "PRAGMA busy_timeout=250;")
         exec(opened, Self.schemaSQL)
         return opened
+    }
+
+    /// One-time move of usage.db (plus WAL sidecars, which carry unflushed
+    /// commits) from the extension-private container into the App Group.
+    /// Without Full Access the moves fail silently and the fallback keeps
+    /// using the legacy file; the migration then runs when access is granted.
+    private func migrateLegacyDatabaseIfNeeded() {
+        guard let legacyDBURL, legacyDBURL != dbURL,
+              FileManager.default.fileExists(atPath: legacyDBURL.path),
+              !FileManager.default.fileExists(atPath: dbURL.path) else { return }
+
+        let directory = dbURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var movedMain = false
+        for suffix in ["", "-wal", "-shm"] {
+            let from = URL(fileURLWithPath: legacyDBURL.path + suffix)
+            guard FileManager.default.fileExists(atPath: from.path) else { continue }
+            let to = URL(fileURLWithPath: dbURL.path + suffix)
+            do {
+                try FileManager.default.moveItem(at: from, to: to)
+                if suffix.isEmpty { movedMain = true }
+            } catch {
+                if suffix.isEmpty { return }  // main file didn't move; sidecars stay with it
+            }
+        }
+        if movedMain {
+            print("UsageStore: migrated usage.db into the app group container")
+        }
     }
 
     private static let schemaSQL = """
@@ -473,14 +590,17 @@ final class UsageStore {
             word TEXT NOT NULL,
             learned_at REAL NOT NULL
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS unlearned_words (
+            word_lower TEXT PRIMARY KEY,
+            unlearned_at REAL NOT NULL
+        ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         ) WITHOUT ROWID;
-        -- v1 → v2 migration is nothing but the additive IF NOT EXISTS tables
-        -- above; stamp the version unconditionally (INSERT OR IGNORE would leave
-        -- an existing v1 row untouched).
-        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2');
+        -- Migrations so far are purely additive IF NOT EXISTS tables; stamp the
+        -- version unconditionally (INSERT OR IGNORE would leave an old row).
+        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '3');
         """
 
     // MARK: - Helpers
