@@ -117,7 +117,7 @@
 ### Smarter Autocorrect
 - [x] Add post-processing to pick closest match based on keyboard distance
 - [x] Fix smart capitalization: "WRNg" autocorrects to "WROng" but should be "WRoNg"
-- [ ] When the cursor is in the middle of a word, use suffix in autocorrect
+- [x] When the cursor is in the middle of a word, use suffix in autocorrect
 
 ## Milestone 10: Text Expansion
 **Goal**: Add custom shortcuts that expand to longer phrases

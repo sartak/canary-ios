@@ -123,7 +123,8 @@ class Key {
         if autocorrectWordDisabled {
             toggleAutocorrectWord()
         } else {
-            if let actions = suggestionService.autocorrectActions {
+            if suggestionService.autocorrectAutoApplies,
+               let actions = suggestionService.autocorrectActions {
                 executeActions(actions)
                 suggestionService.noteAutocorrectApplied()
             }
@@ -135,14 +136,16 @@ class Key {
             toggleAutocorrectWord()
             textDocumentProxy.insertText(text)
         } else {
-            if let autocorrectActions = suggestionService.autocorrectActions {
+            if suggestionService.autocorrectAutoApplies,
+               let autocorrectActions = suggestionService.autocorrectActions {
                 // Combine autocorrect actions with triggering character insertion
                 var combinedActions = autocorrectActions
                 combinedActions.append(.insert(text))
                 executeActions(combinedActions)
                 suggestionService.noteAutocorrectApplied()
             } else {
-                // No autocorrect, just insert the character
+                // No autocorrect (or a mid-word, bar-tap-only proposal): just
+                // insert the character
                 textDocumentProxy.insertText(text)
             }
         }

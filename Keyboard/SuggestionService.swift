@@ -47,6 +47,11 @@ class SuggestionService {
     /// Runner-up corrections behind `autocorrectSuggestion` (already
     /// smart-capitalized), surfaced in the suggestion bar for manual picking.
     private var alternativeCorrections: [String] = []
+    /// Whether the pending autocorrect may be applied automatically on a
+    /// boundary keypress. Mid-word corrections are bar-tap only: a boundary
+    /// typed mid-word is an intentional split, and silently replacing the
+    /// whole word would fight it.
+    private(set) var autocorrectAutoApplies = true
 
     /// Mean key-center distance (in key pitches) at or below which a wrong
     /// character counts as physically plausible fat-fingering. One key pitch is
@@ -240,8 +245,8 @@ class SuggestionService {
                 // We have an exact match, do smart capitalization
                 let smartCapitalizedWord = applySmartCapitalization(word: exactMatch, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
                 autocorrectSuggestion = smartCapitalizedWord != (prefix + suffix) ? smartCapitalizedWord : nil
-            } else if suffix.isEmpty, !prefix.isEmpty,
-                      let learnedWord = usageStore?.learnedWord(for: prefix.lowercased()) {
+            } else if !prefix.isEmpty,
+                      let learnedWord = usageStore?.learnedWord(for: (prefix + suffix).lowercased()) {
                 // A learned word is first-class, exactly like a lexicon exact
                 // match: never correct it away, but do propose its learned
                 // casing when that differs from what was typed ("claude" ->
@@ -259,7 +264,21 @@ class SuggestionService {
             autocorrectSuggestion = nil
         }
 
-        autocorrectActions = autocorrectSuggestion != nil ? createInputActions(for: autocorrectSuggestion!, prefix: prefix, suffix: suffix, excludeTrailingSpace: true) : nil
+        if let suggestion = autocorrectSuggestion {
+            if suffix.isEmpty || exactMatch != nil {
+                // End-of-word corrections and exact-match casing fixes keep
+                // the completion-shaped actions (exact matches end with the
+                // suffix by construction, so createInputActions is sound).
+                autocorrectActions = createInputActions(for: suggestion, prefix: prefix, suffix: suffix, excludeTrailingSpace: true)
+                autocorrectAutoApplies = true
+            } else {
+                autocorrectActions = midWordReplacementActions(for: suggestion, prefix: prefix, suffix: suffix)
+                autocorrectAutoApplies = false
+            }
+        } else {
+            autocorrectActions = nil
+            autocorrectAutoApplies = true
+        }
 
         let filteredTypeahead = if let correction = autocorrectSuggestion {
             typeahead.filter { $0.0 != correction }
@@ -269,9 +288,13 @@ class SuggestionService {
 
         // Runner-up corrections are manually pickable from the bar, ahead of
         // literal-prefix completions (which rarely exist for a typo). The top
-        // correction stays in the dedicated autocorrect slot.
+        // correction stays in the dedicated autocorrect slot. Mid-word,
+        // completion-shaped actions are unsound (a correction need not end
+        // with the suffix), so alternates use whole-word replacement too.
         let alternativeItems: [(String, [InputAction])] = alternativeCorrections.map { word in
-            (word, createInputActions(for: word, prefix: prefix, suffix: suffix, excludeTrailingSpace: false))
+            suffix.isEmpty
+                ? (word, createInputActions(for: word, prefix: prefix, suffix: suffix, excludeTrailingSpace: false))
+                : (word, midWordReplacementActions(for: word, prefix: prefix, suffix: suffix))
         }
         let alternativeWords = Set(alternativeItems.map { $0.0 })
         let combinedTypeahead = alternativeItems + filteredTypeahead.filter { !alternativeWords.contains($0.0) }
@@ -280,16 +303,19 @@ class SuggestionService {
     }
 
     private func updateAutocorrect(prefix: String, suffix: String, autocorrectEnabled: Bool = true, shiftState: ShiftState) -> String? {
-        // Don't autocorrect when editing in the middle of text
-        if prefix.isEmpty || !suffix.isEmpty || !autocorrectEnabled {
+        if prefix.isEmpty || !autocorrectEnabled {
             return nil
         }
 
+        // Mid-word (non-empty suffix) the WHOLE word around the cursor is
+        // corrected; the proposal is bar-tap only (see updateContext).
+        let typedWord = prefix + suffix
+
         // Handle possessive 's suffix: autocorrect just the word part, then append 's
-        let (wordToCorrect, possessiveSuffix) = if (prefix.hasSuffix("'s") || prefix.hasSuffix("'S")) && prefix.count > 2 {
-            (String(prefix.dropLast(2)), String(prefix.suffix(2)))
+        let (wordToCorrect, possessiveSuffix) = if (typedWord.hasSuffix("'s") || typedWord.hasSuffix("'S")) && typedWord.count > 2 {
+            (String(typedWord.dropLast(2)), String(typedWord.suffix(2)))
         } else {
-            (prefix, "")
+            (typedWord, "")
         }
 
         // Skip correction for strings containing invalid characters
@@ -307,18 +333,18 @@ class SuggestionService {
 
         guard let best = corrections.first else {
             alternativeCorrections = []
-            print("AutocorrectService: '\(prefix.lowercased())' -> no correction in \(String(format: "%.3f", duration))ms")
+            print("AutocorrectService: '\(typedWord.lowercased())' -> no correction in \(String(format: "%.3f", duration))ms")
             return nil
         }
 
-        let finalCorrection = applySmartCapitalization(word: best.word + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
+        let finalCorrection = applySmartCapitalization(word: best.word + possessiveSuffix, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
         alternativeCorrections = corrections.dropFirst().map { candidate in
-            applySmartCapitalization(word: candidate.word + possessiveSuffix, userPrefix: prefix, userSuffix: "", shiftState: shiftState)
+            applySmartCapitalization(word: candidate.word + possessiveSuffix, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
         }
 
         let source = best.learned ? " (learned)" : ""
         let alts = alternativeCorrections.isEmpty ? "" : " alts=[\(alternativeCorrections.joined(separator: ", "))]"
-        print("AutocorrectService: '\(prefix.lowercased())' -> '\(finalCorrection)'\(source)\(alts) in \(String(format: "%.3f", duration))ms")
+        print("AutocorrectService: '\(typedWord.lowercased())' -> '\(finalCorrection)'\(source)\(alts) in \(String(format: "%.3f", duration))ms")
         return finalCorrection
     }
 
@@ -773,6 +799,17 @@ class SuggestionService {
         let lower = word.lowercased()
         guard !lexiconContains(lower) else { return }
         store.markLearned(word, reason: "rejection")
+    }
+
+    /// Whole-word replacement around a mid-word cursor: hop past the suffix,
+    /// delete the typed word, insert the replacement; the cursor lands after
+    /// the corrected word (deterministic, and matching what tapping a
+    /// completion feels like).
+    private func midWordReplacementActions(for word: String, prefix: String, suffix: String) -> [InputAction] {
+        var actions: [InputAction] = [.moveCursor(suffix.count)]
+        actions.append(contentsOf: Array(repeating: .deleteBackward, count: prefix.count + suffix.count))
+        actions.append(.insert(word))
+        return actions
     }
 
     /// Whether the shipped lexicon (`words.db`) already contains `wordLower`.

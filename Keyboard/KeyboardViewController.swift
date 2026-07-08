@@ -887,8 +887,18 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
 
         suggestionView.setOnAutocorrectToggle { [weak self] in
-            self?.recordAutocorrectRejectionIfNeeded()
-            self?.toggleAutocorrectWord()
+            guard let self = self else { return }
+            if !self.suggestionService.autocorrectAutoApplies,
+               let actions = self.suggestionService.autocorrectActions {
+                // Mid-word proposals are never auto-applied; tapping the slot
+                // APPLIES them (whole-word replacement around the cursor).
+                self.suggestionService.noteAutocorrectApplied()
+                self.executeActions(actions)
+                self.refreshSuggestions()
+            } else {
+                self.recordAutocorrectRejectionIfNeeded()
+                self.toggleAutocorrectWord()
+            }
         }
 
         view.addSubview(suggestionView)
