@@ -53,6 +53,19 @@ class SuggestionService {
     /// whole word would fight it.
     private(set) var autocorrectAutoApplies = true
 
+    struct PendingShortcutExpansion {
+        /// The trigger as typed (original casing).
+        let trigger: String
+        let phrase: String
+        /// The character that completed the trigger; re-inserted after the
+        /// phrase by the expansion.
+        let boundary: Character
+    }
+    /// Fired when the token just completed by a boundary keypress is a known
+    /// shortcut trigger. Detection only reports; the controller decides and
+    /// performs the expansion.
+    var onShortcutDetected: ((PendingShortcutExpansion) -> Void)?
+
     /// Mean key-center distance (in key pitches) at or below which a wrong
     /// character counts as physically plausible fat-fingering. One key pitch is
     /// an immediate neighbor; 1.5 admits the diagonal ring.
@@ -239,6 +252,12 @@ class SuggestionService {
 
         if learningEnabled {
             detectWordCommit(before: before, prefix: prefix)
+            // Shortcut detection rides the same boundary transition and the
+            // same host gate: fields that disable autocorrection (terminals)
+            // must not expand tokens either.
+            if !previousPrefix.isEmpty, prefix.isEmpty {
+                detectShortcut(before: before)
+            }
         } else {
             // Keep the transition state coherent so re-entering a normal field
             // can't misattribute a commit across the boundary.
@@ -324,6 +343,12 @@ class SuggestionService {
         // Mid-word (non-empty suffix) the WHOLE word around the cursor is
         // corrected; the proposal is bar-tap only (see updateContext).
         let typedWord = prefix + suffix
+
+        // A known shortcut trigger must never be corrected away while it's
+        // being typed ("omw" would become "own" before its boundary lands).
+        if usageStore?.shortcutPhrase(for: typedWord.lowercased()) != nil {
+            return nil
+        }
 
         // Handle possessive 's suffix: autocorrect just the word part, then append 's
         let (wordToCorrect, possessiveSuffix) = if (typedWord.hasSuffix("'s") || typedWord.hasSuffix("'S")) && typedWord.count > 2 {
@@ -744,6 +769,39 @@ class SuggestionService {
         // Sentence-initial capitalization is auto-shift noise, not evidence of
         // how the user cases the word — count the use but keep the stored casing.
         recordCommittedWord(committed, trustCasing: !sentenceInitial)
+    }
+
+    /// Reports the just-completed token when it is a shortcut trigger.
+    private func detectShortcut(before: String?) {
+        guard let before,
+              let (token, boundary) = Self.lastCompletedToken(in: before),
+              let phrase = usageStore?.shortcutPhrase(for: token.lowercased()) else { return }
+        print("SuggestionService: shortcut '\(token)' detected (boundary '\(boundary)')")
+        onShortcutDetected?(PendingShortcutExpansion(trigger: token, phrase: phrase, boundary: boundary))
+    }
+
+    /// The token immediately before EXACTLY ONE trailing boundary character.
+    /// Distinct from the word-commit extractor: triggers may contain digits
+    /// ("2nite"), so token characters are letters, digits, and apostrophes —
+    /// the trigger hygiene charset. Two boundaries in a row return nil.
+    static func lastCompletedToken(in before: String) -> (token: String, boundary: Character)? {
+        guard let boundary = before.last, !isTokenCharacter(boundary) else { return nil }
+        let end = before.index(before: before.endIndex)
+        var start = end
+        while start > before.startIndex {
+            let previous = before.index(before: start)
+            if isTokenCharacter(before[previous]) {
+                start = previous
+            } else {
+                break
+            }
+        }
+        guard start < end else { return nil }
+        return (String(before[start..<end]), boundary)
+    }
+
+    private static func isTokenCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "'"
     }
 
     /// The word immediately before the trailing boundary character(s) of `before`,
