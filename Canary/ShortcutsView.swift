@@ -108,12 +108,14 @@ struct ShortcutsView: View {
             store.removeShortcut(shortcuts[index].triggerLower)
         }
         reload()
+        DictionarySync.shared.kick()
     }
 
     private func add() {
         guard let store = DictionaryStore() else { return }
         if store.addShortcut(trigger: newTrigger, phrase: newPhrase) {
             reload()
+            DictionarySync.shared.kick()
         } else {
             addRejected = true
         }

@@ -124,7 +124,7 @@ final class DictionaryStore {
     /// Settings and only mirrored per keyboard session.
     func shortcuts() -> [Shortcut] {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT trigger, trigger_lower, phrase FROM shortcuts ORDER BY trigger_lower ASC", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT trigger, trigger_lower, phrase FROM shortcuts WHERE deleted = 0 ORDER BY trigger_lower ASC", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else {
             return []
         }
@@ -160,7 +160,8 @@ final class DictionaryStore {
         run("""
             INSERT INTO shortcuts (trigger_lower, trigger, phrase, created_at) VALUES (?, ?, ?, ?)
             ON CONFLICT(trigger_lower) DO UPDATE SET
-                trigger = excluded.trigger, phrase = excluded.phrase
+                trigger = excluded.trigger, phrase = excluded.phrase,
+                created_at = excluded.created_at, dirty = 1, deleted = 0
             """,
             texts: [trimmedTrigger.lowercased(), trimmedTrigger, trimmedPhrase],
             doubles: [Date().timeIntervalSince1970])
@@ -168,7 +169,10 @@ final class DictionaryStore {
     }
 
     func removeShortcut(_ triggerLower: String) {
-        run("DELETE FROM shortcuts WHERE trigger_lower = ?", texts: [triggerLower])
+        // Soft delete: the tombstone propagates the deletion to other devices.
+        // Numbered placeholders: run() binds texts before doubles.
+        run("UPDATE shortcuts SET deleted = 1, dirty = 1, created_at = ?2 WHERE trigger_lower = ?1",
+            texts: [triggerLower], doubles: [Date().timeIntervalSince1970])
     }
 
     private static func isValidShortcutTrigger(_ trigger: String) -> Bool {
@@ -194,6 +198,196 @@ final class DictionaryStore {
         return word.contains { $0.isLetter }
     }
 
+    // MARK: - Sync support (DictionarySync)
+
+    /// Serialized CKSyncEngine state, persisted beside the data it describes.
+    func syncStateData() -> Data? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT value FROM sync_state WHERE key = 'engine_state'", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else { return nil }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let bytes = sqlite3_column_blob(statement, 0) else { return nil }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+    }
+
+    func setSyncStateData(_ data: Data) {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('engine_state', ?)", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else { return }
+        defer { sqlite3_finalize(statement) }
+        data.withUnsafeBytes { buffer in
+            _ = sqlite3_bind_blob(statement, 1, buffer.baseAddress, Int32(buffer.count),
+                                  unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            _ = sqlite3_step(statement)
+        }
+    }
+
+    /// word_lowers with un-pushed changes in any of the three word tables.
+    func dirtyWordKeys() -> [String] {
+        queryStrings("""
+            SELECT word_lower FROM word_usage WHERE dirty = 1
+            UNION SELECT word_lower FROM learned_words WHERE dirty = 1
+            UNION SELECT word_lower FROM unlearned_words WHERE dirty = 1
+            """)
+    }
+
+    func dirtyShortcutKeys() -> [String] {
+        queryStrings("SELECT trigger_lower FROM shortcuts WHERE dirty = 1")
+    }
+
+    /// Composite view over the three word tables, in merge-rule shape.
+    /// updatedAt is the newest of the row timestamps.
+    func wordState(for wordLower: String) -> DictionaryMerge.WordState? {
+        var word = wordLower
+        var count = 0
+        var lastUsed: Double = 0
+        var found = false
+
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT word, count, last_used FROM word_usage WHERE word_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_text(statement, 1, wordLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            if sqlite3_step(statement) == SQLITE_ROW {
+                if let wordPtr = sqlite3_column_text(statement, 0) { word = String(cString: wordPtr) }
+                count = Int(sqlite3_column_int64(statement, 1))
+                lastUsed = sqlite3_column_double(statement, 2)
+                found = true
+            }
+            sqlite3_finalize(statement)
+        }
+
+        var learnedAt: Double?
+        if sqlite3_prepare_v2(db, "SELECT learned_at, word FROM learned_words WHERE word_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_text(statement, 1, wordLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            if sqlite3_step(statement) == SQLITE_ROW {
+                learnedAt = sqlite3_column_double(statement, 0)
+                if let wordPtr = sqlite3_column_text(statement, 1) { word = String(cString: wordPtr) }
+                found = true
+            }
+            sqlite3_finalize(statement)
+        }
+
+        var unlearnedAt: Double?
+        if sqlite3_prepare_v2(db, "SELECT unlearned_at FROM unlearned_words WHERE word_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_text(statement, 1, wordLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            if sqlite3_step(statement) == SQLITE_ROW {
+                unlearnedAt = sqlite3_column_double(statement, 0)
+                found = true
+            }
+            sqlite3_finalize(statement)
+        }
+
+        guard found else { return nil }
+        return DictionaryMerge.WordState(
+            word: word,
+            count: count,
+            learned: learnedAt != nil,
+            tombstoned: unlearnedAt != nil,
+            updatedAt: Date(timeIntervalSince1970: max(lastUsed, learnedAt ?? 0, unlearnedAt ?? 0))
+        )
+    }
+
+    /// Writes a merged state across the three word tables. markDirty re-queues
+    /// the row for push (the merge produced something the remote lacks).
+    func applyWordState(_ state: DictionaryMerge.WordState, for wordLower: String, markDirty: Bool) {
+        let dirty = markDirty ? 1 : 0
+        let stamp = state.updatedAt.timeIntervalSince1970
+        exec("BEGIN")
+        if state.count > 0 {
+            run("INSERT OR REPLACE INTO word_usage (word_lower, word, count, last_used, dirty) VALUES (?1, ?2, ?3, ?4, \(dirty))",
+                texts: [wordLower, state.word], ints: [state.count], doubles: [stamp])
+        } else {
+            run("DELETE FROM word_usage WHERE word_lower = ?", texts: [wordLower])
+        }
+        if state.learned {
+            run("INSERT OR REPLACE INTO learned_words (word_lower, word, learned_at, dirty) VALUES (?1, ?2, ?3, \(dirty))",
+                texts: [wordLower, state.word], doubles: [stamp])
+        } else {
+            run("DELETE FROM learned_words WHERE word_lower = ?", texts: [wordLower])
+        }
+        if state.tombstoned {
+            run("INSERT OR REPLACE INTO unlearned_words (word_lower, unlearned_at, dirty) VALUES (?1, ?2, \(dirty))",
+                texts: [wordLower], doubles: [stamp])
+        } else {
+            run("DELETE FROM unlearned_words WHERE word_lower = ?", texts: [wordLower])
+        }
+        exec("COMMIT")
+    }
+
+    func clearWordDirty(_ wordLower: String) {
+        for table in ["word_usage", "learned_words", "unlearned_words"] {
+            run("UPDATE \(table) SET dirty = 0 WHERE word_lower = ?", texts: [wordLower])
+        }
+    }
+
+    /// Shortcut row in merge-rule shape (created_at doubles as updatedAt).
+    func shortcutState(for triggerLower: String) -> DictionaryMerge.ShortcutState? {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT trigger, phrase, created_at, deleted FROM shortcuts WHERE trigger_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else { return nil }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, triggerLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let triggerPtr = sqlite3_column_text(statement, 0),
+              let phrasePtr = sqlite3_column_text(statement, 1) else { return nil }
+        return DictionaryMerge.ShortcutState(
+            trigger: String(cString: triggerPtr),
+            phrase: String(cString: phrasePtr),
+            tombstoned: sqlite3_column_int64(statement, 3) != 0,
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+        )
+    }
+
+    func applyShortcutState(_ state: DictionaryMerge.ShortcutState, for triggerLower: String, markDirty: Bool) {
+        let dirty = markDirty ? 1 : 0
+        let deleted = state.tombstoned ? 1 : 0
+        run("INSERT OR REPLACE INTO shortcuts (trigger_lower, trigger, phrase, created_at, dirty, deleted) VALUES (?1, ?2, ?3, ?4, \(dirty), \(deleted))",
+            texts: [triggerLower, state.trigger, state.phrase],
+            doubles: [state.updatedAt.timeIntervalSince1970])
+    }
+
+    func clearShortcutDirty(_ triggerLower: String) {
+        run("UPDATE shortcuts SET dirty = 0 WHERE trigger_lower = ?", texts: [triggerLower])
+    }
+
+    /// Hard-deletes tombstones past retention; returns their keys so the sync
+    /// engine can delete the CloudKit records too.
+    func purgeExpiredTombstones(now: Date) -> (words: [String], shortcuts: [String]) {
+        let cutoff = now.timeIntervalSince1970 - DictionaryMerge.tombstoneRetentionDays * 86_400
+        let words = queryStrings("SELECT word_lower FROM unlearned_words WHERE unlearned_at < \(cutoff)")
+        for word in words {
+            run("DELETE FROM unlearned_words WHERE word_lower = ?", texts: [word])
+        }
+        let shortcuts = queryStrings("SELECT trigger_lower FROM shortcuts WHERE deleted = 1 AND created_at < \(cutoff)")
+        for trigger in shortcuts {
+            run("DELETE FROM shortcuts WHERE trigger_lower = ?", texts: [trigger])
+        }
+        return (words, shortcuts)
+    }
+
+    /// Re-queues every row for push (account change / zone re-creation).
+    func markAllDirty() {
+        for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts"] {
+            exec("UPDATE \(table) SET dirty = 1")
+        }
+    }
+
+    private func queryStrings(_ sql: String) -> [String] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return [] }
+        defer { sqlite3_finalize(statement) }
+        var result: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let ptr = sqlite3_column_text(statement, 0) {
+                result.append(String(cString: ptr))
+            }
+        }
+        return result
+    }
+
     // MARK: - SQLite helpers
 
     private func exec(_ sql: String) {
@@ -204,8 +398,9 @@ final class DictionaryStore {
         }
     }
 
-    /// Prepares, binds texts then doubles (in that index order), and steps.
-    private func run(_ sql: String, texts: [String] = [], doubles: [Double] = []) {
+    /// Prepares, binds texts, then ints, then doubles (in that index order),
+    /// and steps. Numbered placeholders (?1) may reorder within the SQL.
+    private func run(_ sql: String, texts: [String] = [], ints: [Int] = [], doubles: [Double] = []) {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
             print("DictionaryStore: could not prepare: \(sql)")
@@ -216,6 +411,10 @@ final class DictionaryStore {
         var index: Int32 = 1
         for text in texts {
             sqlite3_bind_text(statement, index, text, -1, transient)
+            index += 1
+        }
+        for value in ints {
+            sqlite3_bind_int64(statement, index, Int64(value))
             index += 1
         }
         for value in doubles {

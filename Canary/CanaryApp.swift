@@ -10,6 +10,8 @@ import SwiftData
 
 @main
 struct CanaryApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
@@ -28,5 +30,10 @@ struct CanaryApp: App {
             ContentView()
         }
         .modelContainer(sharedModelContainer)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                DictionarySync.shared.kick()
+            }
+        }
     }
 }

@@ -225,12 +225,12 @@ final class UsageStore {
             ? """
               INSERT INTO word_usage (word_lower, word, count, last_used) VALUES (?, ?, 1, ?)
               ON CONFLICT(word_lower) DO UPDATE SET
-                  count = count + 1, word = excluded.word, last_used = excluded.last_used
+                  count = count + 1, word = excluded.word, last_used = excluded.last_used, dirty = 1
               """
             : """
               INSERT INTO word_usage (word_lower, word, count, last_used) VALUES (?, ?, 1, ?)
               ON CONFLICT(word_lower) DO UPDATE SET
-                  count = count + 1, last_used = excluded.last_used
+                  count = count + 1, last_used = excluded.last_used, dirty = 1
               """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
@@ -264,7 +264,7 @@ final class UsageStore {
         guard let stored = loadLearned()[lower], stored != word, let db = connection() else { return }
 
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "UPDATE learned_words SET word = ? WHERE word_lower = ?",
+        guard sqlite3_prepare_v2(db, "UPDATE learned_words SET word = ?, dirty = 1 WHERE word_lower = ?",
                                  -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
             print("UsageStore: could not prepare learned casing update")
             return
@@ -469,7 +469,7 @@ final class UsageStore {
         var result: [String: String] = [:]
         if let db = connection() {
             var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT trigger_lower, phrase FROM shortcuts", -1, &stmt, nil) == SQLITE_OK,
+            if sqlite3_prepare_v2(db, "SELECT trigger_lower, phrase FROM shortcuts WHERE deleted = 0", -1, &stmt, nil) == SQLITE_OK,
                let statement = stmt {
                 while sqlite3_step(statement) == SQLITE_ROW {
                     if let triggerPtr = sqlite3_column_text(statement, 0),
@@ -496,7 +496,8 @@ final class UsageStore {
         guard sqlite3_prepare_v2(db, """
             INSERT INTO shortcuts (trigger_lower, trigger, phrase, created_at) VALUES (?, ?, ?, ?)
             ON CONFLICT(trigger_lower) DO UPDATE SET
-                trigger = excluded.trigger, phrase = excluded.phrase
+                trigger = excluded.trigger, phrase = excluded.phrase,
+                created_at = excluded.created_at, dirty = 1, deleted = 0
             """, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else {
             print("UsageStore: could not prepare shortcut upsert")
             return
@@ -520,10 +521,13 @@ final class UsageStore {
     func removeShortcut(triggerLower: String) {
         guard let db = connection() else { return }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "DELETE FROM shortcuts WHERE trigger_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+        // Soft delete: the tombstone row is what propagates the deletion to
+        // other devices (absence is not deletion in the merge rules).
+        guard sqlite3_prepare_v2(db, "UPDATE shortcuts SET deleted = 1, dirty = 1, created_at = ? WHERE trigger_lower = ?", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else { return }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, triggerLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_text(statement, 2, triggerLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         _ = sqlite3_step(statement)
         shortcutCache?.removeValue(forKey: triggerLower)
     }
@@ -650,8 +654,33 @@ final class UsageStore {
         // The app process shares this database now; briefly wait out its
         // writes instead of failing statements.
         exec(opened, "PRAGMA busy_timeout=250;")
+        migrateForSync(opened)
         exec(opened, Self.schemaSQL)
         return opened
+    }
+
+    /// Pre-v5 databases lack the sync bookkeeping columns; fresh databases get
+    /// them from the CREATE statements, so the ALTERs run exactly once, gated
+    /// on the recorded version (everything starts dirty: never-synced rows
+    /// must push).
+    private func migrateForSync(_ db: OpaquePointer) {
+        var version = 0
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'schema_version'", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            if sqlite3_step(statement) == SQLITE_ROW, let valuePtr = sqlite3_column_text(statement, 0) {
+                version = Int(String(cString: valuePtr)) ?? 0
+            }
+            sqlite3_finalize(statement)
+        }
+        guard version >= 1, version < 5 else { return }
+        for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts"] {
+            exec(db, "ALTER TABLE \(table) ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1;")
+        }
+        // Shortcut deletions must propagate as tombstones (absence is not
+        // deletion in the merge rules), so removal is a soft delete.
+        exec(db, "ALTER TABLE shortcuts ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
+        print("UsageStore: migrated schema v\(version) for sync bookkeeping")
     }
 
     /// One-time move of usage.db (plus WAL sidecars, which carry unflushed
@@ -710,22 +739,31 @@ final class UsageStore {
             word_lower TEXT PRIMARY KEY,
             word TEXT NOT NULL,
             count INTEGER NOT NULL,
-            last_used REAL NOT NULL
+            last_used REAL NOT NULL,
+            dirty INTEGER NOT NULL DEFAULT 1
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS learned_words (
             word_lower TEXT PRIMARY KEY,
             word TEXT NOT NULL,
-            learned_at REAL NOT NULL
+            learned_at REAL NOT NULL,
+            dirty INTEGER NOT NULL DEFAULT 1
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS unlearned_words (
             word_lower TEXT PRIMARY KEY,
-            unlearned_at REAL NOT NULL
+            unlearned_at REAL NOT NULL,
+            dirty INTEGER NOT NULL DEFAULT 1
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS shortcuts (
             trigger_lower TEXT PRIMARY KEY,
             trigger TEXT NOT NULL,
             phrase TEXT NOT NULL,
-            created_at REAL NOT NULL
+            created_at REAL NOT NULL,
+            dirty INTEGER NOT NULL DEFAULT 1,
+            deleted INTEGER NOT NULL DEFAULT 0
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS sync_state (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
@@ -733,7 +771,7 @@ final class UsageStore {
         ) WITHOUT ROWID;
         -- Migrations so far are purely additive IF NOT EXISTS tables; stamp the
         -- version unconditionally (INSERT OR IGNORE would leave an old row).
-        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '4');
+        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
         """
 
     // MARK: - Helpers

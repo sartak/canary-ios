@@ -29,16 +29,18 @@ struct DictionaryView: View {
                 )
             } else {
                 List {
-                    ForEach(entries) { entry in
-                        HStack {
-                            Text(entry.word)
-                            Spacer()
-                            Text("\(entry.count)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
+                    Section(footer: syncFooter) {
+                        ForEach(entries) { entry in
+                            HStack {
+                                Text(entry.word)
+                                Spacer()
+                                Text("\(entry.count)")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
                         }
+                        .onDelete(perform: unlearn)
                     }
-                    .onDelete(perform: unlearn)
                 }
             }
         }
@@ -71,6 +73,16 @@ struct DictionaryView: View {
         .onAppear(perform: reload)
     }
 
+    private var syncFooter: some View {
+        Group {
+            if let last = DictionarySync.lastSync {
+                Text("Synced via iCloud when this app opens. Last sync \(last.formatted(.relative(presentation: .named))).")
+            } else {
+                Text("Syncs via iCloud when this app opens.")
+            }
+        }
+    }
+
     private var unavailableExplainer: some View {
         ContentUnavailableView {
             Label("Dictionary unavailable", systemImage: "lock")
@@ -95,12 +107,14 @@ struct DictionaryView: View {
             store.unlearn(entries[index].wordLower)
         }
         reload()
+        DictionarySync.shared.kick()
     }
 
     private func add() {
         guard let store = DictionaryStore() else { return }
         if store.add(newWord) {
             reload()
+            DictionarySync.shared.kick()
         } else {
             addRejected = true
         }

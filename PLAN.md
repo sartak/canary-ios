@@ -134,7 +134,7 @@
 **Goal**: Sync settings and learned vocabulary across devices
 
 ### iCloud Integration
-- [ ] Implement encrypted iCloud sync for user dictionary
+- [x] Implement encrypted iCloud sync for user dictionary
 - [ ] Sync keyboard settings and preferences
-- [ ] Handle sync conflicts and merging
+- [x] Handle sync conflicts and merging
 
