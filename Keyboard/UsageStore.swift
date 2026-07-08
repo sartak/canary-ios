@@ -334,6 +334,17 @@ final class UsageStore {
         }
     }
 
+    /// Memory-pressure hook. The lazy caches reload from usage.db on next
+    /// read; iOS-provided session words are NOT dropped (they cannot be
+    /// re-fetched until the next keyboard launch).
+    func releaseMemory() {
+        personalCounts = nil
+        learned = nil
+        if let db {
+            sqlite3_db_release_memory(db)
+        }
+    }
+
     // MARK: - Cache loading
 
     @discardableResult

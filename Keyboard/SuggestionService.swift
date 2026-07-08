@@ -126,6 +126,13 @@ class SuggestionService {
         sqlite3_close(db)
     }
 
+    /// Memory-pressure hook: forwards to the swipe decoder's template cache
+    /// and asks SQLite to shed page cache.
+    func releaseMemory() {
+        swipeDecoder.releaseMemory()
+        sqlite3_db_release_memory(db)
+    }
+
     struct SwipeDecodeResult {
         /// Capitalized word that was committed.
         let word: String

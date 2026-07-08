@@ -92,6 +92,13 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
     }
 
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        print("KeyboardViewController: memory warning — releasing caches")
+        usageStore?.releaseMemory()
+        suggestionService.releaseMemory()
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
 

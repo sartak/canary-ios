@@ -65,6 +65,13 @@ final class SwipeDecoder {
         self.lexicon = lexicon
     }
 
+    /// Memory-pressure hook: drops the template cache (worst case ~12MB);
+    /// templates rebuild lazily on the next decode. Nil-ing rather than
+    /// emptying also releases the dictionary's capacity and the KeyCenters copy.
+    func releaseMemory() {
+        cache = nil
+    }
+
     /// Full decode on touch-up. Returns ranked candidates, best first, or `[]`
     /// when the confidence gate rejects (swiping.md §4.5).
     /// - Parameters:

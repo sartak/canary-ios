@@ -112,7 +112,7 @@
 - [x] Track swipe accuracy based on whether word was corrected, for fine-tuning
 - [x] Add frequency tracking for typed words
 - [x] Enhance predictions with learned vocabulary
-- [ ] Implement memory pressure response (release caches, unload unused data)
+- [x] Implement memory pressure response (release caches, unload unused data)
 
 ### Smarter Autocorrect
 - [x] Add post-processing to pick closest match based on keyboard distance
