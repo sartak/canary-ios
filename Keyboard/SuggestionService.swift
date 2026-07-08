@@ -499,6 +499,8 @@ class SuggestionService {
     /// - "W|D" + "world" → "WORLD" (all caps intent)
     /// - "WO|D" + "world" → "WORLD" (all caps)
     /// - "Wo|D" + "world" → "WorlD" (mixed case preserved)
+    /// - "WRNg" + "wrong" → "WRoNg" (case follows the letters, not the indices)
+    /// - "Teh" + "the" → "The" (case follows a transposition)
     ///
     /// Examples with proper nouns:
     /// - "sh|" + "Shawn" → "Shawn" (preserve corpus caps)
@@ -564,41 +566,97 @@ class SuggestionService {
         }
 
         // Apply user's capitalization pattern to the full word
-        let patternLength = userPattern.count
-        let wordLength = word.count
+        guard !userPattern.isEmpty && !word.isEmpty else { return word }
 
-        guard patternLength > 0 && wordLength > 0 else { return word }
+        // All-caps intent (no lowercase letters, more than one letter) applies
+        // to the whole word regardless of length differences.
+        let hasLowercase = userPattern.contains { $0.isLowercase }
+        let hasMultipleLetters = userPattern.filter { $0.isLetter }.count > 1
+        if !hasLowercase && hasMultipleLetters {
+            return word.uppercased()
+        }
 
-        var result = word
-        let wordArray = Array(word)
-        let patternArray = Array(userPattern)
+        return Self.caseTransferred(pattern: userPattern, onto: word)
+    }
 
-        // Apply capitalization pattern character by character
-        for i in 0..<min(patternLength, wordLength) {
-            let patternChar = patternArray[i]
-            let wordChar = wordArray[i]
+    /// Case-transfers `pattern`'s per-character casing onto `word` by aligning
+    /// the two strings (optimal string alignment), so an inserted letter in a
+    /// correction doesn't shift every subsequent transfer: "WRNg" + "wrong" is
+    /// "WRoNg", not "WROng". Alignment ops and their transfer rules:
+    /// match/substitution → the pattern char's case restyles the word char;
+    /// insertion (char only in the word) → corpus casing survives;
+    /// deletion (char only in the pattern) → contributes nothing;
+    /// adjacent transposition → cases transfer crosswise, following each
+    /// letter through the swap ("Teh" + "the" → "The").
+    /// Backtrace ties prefer match > transposition > substitution > insertion
+    /// > deletion, making the output deterministic.
+    private static func caseTransferred(pattern: String, onto word: String) -> String {
+        let p = Array(pattern)
+        let w = Array(word)
+        let pl = Array(pattern.lowercased())
+        let wl = Array(word.lowercased())
+        // Multi-character case foldings would desynchronize the arrays; bail
+        // to the untouched word rather than misalign (vanishingly rare here).
+        guard pl.count == p.count, wl.count == w.count else { return word }
+        let m = p.count
+        let n = w.count
 
+        // Optimal string alignment DP (insert/delete/substitute/adjacent
+        // transposition, all cost 1). Words are tiny; the full matrix is fine.
+        var d = Array(repeating: Array(repeating: 0, count: n + 1), count: m + 1)
+        for i in 0...m { d[i][0] = i }
+        for j in 0...n { d[0][j] = j }
+        for i in 1...m {
+            for j in 1...n {
+                let cost = pl[i - 1] == wl[j - 1] ? 0 : 1
+                var best = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+                if i > 1, j > 1, pl[i - 1] == wl[j - 2], pl[i - 2] == wl[j - 1] {
+                    best = min(best, d[i - 2][j - 2] + 1)
+                }
+                d[i][j] = best
+            }
+        }
+
+        /// The pattern char's case restyles the word char; caseless pattern
+        /// chars (apostrophes) leave the word char untouched.
+        func styled(_ wordChar: Character, by patternChar: Character) -> Character {
             if patternChar.isUppercase {
-                result = String(result.prefix(i)) + String(wordChar).uppercased() + String(result.dropFirst(i + 1))
+                return Character(String(wordChar).uppercased())
+            }
+            if patternChar.isLowercase {
+                return Character(String(wordChar).lowercased())
+            }
+            return wordChar
+        }
+
+        // Backtrace, building the result right-to-left. Tie order: match >
+        // transposition > substitution > insertion > deletion.
+        var result: [Character] = []
+        var i = m
+        var j = n
+        while i > 0 || j > 0 {
+            if i > 0, j > 0, pl[i - 1] == wl[j - 1], d[i][j] == d[i - 1][j - 1] {
+                result.append(styled(w[j - 1], by: p[i - 1]))
+                i -= 1
+                j -= 1
+            } else if i > 1, j > 1, pl[i - 1] == wl[j - 2], pl[i - 2] == wl[j - 1],
+                      d[i][j] == d[i - 2][j - 2] + 1 {
+                result.append(styled(w[j - 1], by: p[i - 2]))
+                result.append(styled(w[j - 2], by: p[i - 1]))
+                i -= 2
+                j -= 2
+            } else if i > 0, j > 0, d[i][j] == d[i - 1][j - 1] + 1 {
+                result.append(styled(w[j - 1], by: p[i - 1]))
+                i -= 1
+                j -= 1
+            } else if j > 0, d[i][j] == d[i][j - 1] + 1 {
+                result.append(w[j - 1])
+                j -= 1
             } else {
-                result = String(result.prefix(i)) + String(wordChar).lowercased() + String(result.dropFirst(i + 1))
+                i -= 1
             }
         }
-
-        // If pattern is shorter than word, preserve remaining corpus capitalization
-        // If user pattern shows "all caps intent" (no lowercase letters and multiple letters), apply to whole word
-        if patternLength < wordLength {
-            let hasLowercase = userPattern.contains { $0.isLowercase }
-            let hasMultipleLetters = userPattern.filter { $0.isLetter }.count > 1
-            let isAllCapsIntent = !hasLowercase && hasMultipleLetters
-
-            if isAllCapsIntent {
-                result = result.uppercased()
-            }
-            // Otherwise keep remaining characters as they were in corpus
-        }
-
-        return result
+        return String(result.reversed())
     }
 
     static func isWordCharacter(in text: String, at index: String.Index) -> Bool {
