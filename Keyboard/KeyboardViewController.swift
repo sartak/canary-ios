@@ -84,6 +84,22 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // replacements) joins the personal dictionary for this session. iOS
         // owns the source, so it is re-fetched each launch, never persisted.
         // The completion can arrive off the main queue.
+        // Shortcut expansion: replace the just-committed trigger (plus its
+        // boundary) with the phrase, boundary re-inserted verbatim. The
+        // standard executeActions undo already makes backspace restore the
+        // literal trigger. Tapping the bar's phrase preview opts out for this
+        // word via autocorrectWordDisabled, which this guard respects.
+        suggestionService.onShortcutDetected = { [weak self] expansion in
+            guard let self = self, !self.autocorrectWordDisabled else { return }
+            var actions: [InputAction] = Array(repeating: .deleteBackward, count: expansion.trigger.count + 1)
+            actions.append(.insert(expansion.phrase + String(expansion.boundary)))
+            if expansion.boundary == " " {
+                actions.append(.maybePunctuating(true))
+            }
+            self.executeActions(actions)
+            self.usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: expansion.trigger, resolved: expansion.phrase)
+        }
+
         requestSupplementaryLexicon { [weak self] lexicon in
             let entries = lexicon.entries.map { (userInput: $0.userInput, documentText: $0.documentText) }
             DispatchQueue.main.async {

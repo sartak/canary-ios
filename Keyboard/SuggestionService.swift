@@ -65,6 +65,10 @@ class SuggestionService {
     /// shortcut trigger. Detection only reports; the controller decides and
     /// performs the expansion.
     var onShortcutDetected: ((PendingShortcutExpansion) -> Void)?
+    /// Whether the autocorrect slot currently shows a shortcut-phrase preview
+    /// rather than a correction: no actions, no auto-apply — tapping the slot
+    /// opts out for this word through the existing toggle path.
+    private(set) var pendingShortcutPreview = false
 
     /// Mean key-center distance (in key pitches) at or below which a wrong
     /// character counts as physically plausible fat-fingering. One key pitch is
@@ -272,6 +276,7 @@ class SuggestionService {
         // updateAutocorrect repopulates these when it proposes a correction;
         // every other path through the branch below leaves them empty.
         alternativeCorrections = []
+        pendingShortcutPreview = false
 
         if autocorrectEnabled {
             if let exactMatch = exactMatch {
@@ -298,7 +303,12 @@ class SuggestionService {
         }
 
         if let suggestion = autocorrectSuggestion {
-            if suffix.isEmpty || exactMatch != nil {
+            if pendingShortcutPreview {
+                // A preview is not a correction: nothing to apply; the
+                // expansion itself happens at the boundary keypress.
+                autocorrectActions = nil
+                autocorrectAutoApplies = false
+            } else if suffix.isEmpty || exactMatch != nil {
                 // End-of-word corrections and exact-match casing fixes keep
                 // the completion-shaped actions (exact matches end with the
                 // suffix by construction, so createInputActions is sound).
@@ -346,8 +356,11 @@ class SuggestionService {
 
         // A known shortcut trigger must never be corrected away while it's
         // being typed ("omw" would become "own" before its boundary lands).
-        if usageStore?.shortcutPhrase(for: typedWord.lowercased()) != nil {
-            return nil
+        // The slot previews the expansion instead; tapping it opts out.
+        if let phrase = usageStore?.shortcutPhrase(for: typedWord.lowercased()) {
+            pendingShortcutPreview = true
+            alternativeCorrections = []
+            return phrase.count > 24 ? String(phrase.prefix(24)) + "…" : phrase
         }
 
         // Handle possessive 's suffix: autocorrect just the word part, then append 's

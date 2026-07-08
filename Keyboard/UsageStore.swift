@@ -14,6 +14,7 @@ enum TapEventKind: String {
     case autocorrectApplied = "autocorrect_applied"
     case autocorrectRejected = "autocorrect_rejected"
     case suggestionPicked = "suggestion_picked"
+    case shortcutExpanded = "shortcut_expanded"
 }
 
 /// Every tunable constant for word learning + personal frequency, in one place
