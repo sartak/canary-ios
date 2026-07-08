@@ -135,6 +135,6 @@
 
 ### iCloud Integration
 - [x] Implement encrypted iCloud sync for user dictionary
-- [ ] Sync keyboard settings and preferences
+- [x] Sync keyboard settings and preferences
 - [x] Handle sync conflicts and merging
 

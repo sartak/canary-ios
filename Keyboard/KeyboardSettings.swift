@@ -37,17 +37,30 @@ enum KeyboardSettings {
 
     static var swipeOnlyMode: Bool {
         get { store.bool(forKey: "swipeOnlyMode") }
-        set { store.set(newValue, forKey: "swipeOnlyMode") }
+        set { setStamped(newValue, forKey: "swipeOnlyMode") }
     }
 
     static var autocorrectUserDisabled: Bool {
         get { store.bool(forKey: "autocorrectUserDisabled") }
-        set { store.set(newValue, forKey: "autocorrectUserDisabled") }
+        set { setStamped(newValue, forKey: "autocorrectUserDisabled") }
     }
 
     static var debugVisualizationEnabled: Bool {
         get { store.bool(forKey: "debugVisualizationEnabled") }
-        set { store.set(newValue, forKey: "debugVisualizationEnabled") }
+        set { setStamped(newValue, forKey: "debugVisualizationEnabled") }
+    }
+
+    /// Companion change-stamp key for a setting; SettingsSync (app target)
+    /// compares stamps to decide which side of the iCloud mirror is newer.
+    static func changeStampKey(for key: String) -> String {
+        key + ".changedAt"
+    }
+
+    /// Every write carries a change stamp so cross-device merging can be
+    /// last-writer-wins — the same rule the settings already have locally.
+    private static func setStamped(_ value: Bool, forKey key: String) {
+        store.set(value, forKey: key)
+        store.set(Date().timeIntervalSince1970, forKey: changeStampKey(for: key))
     }
 
     /// One-time copy of the pre-App-Group values out of `.standard`, which

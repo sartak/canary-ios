@@ -33,6 +33,7 @@ struct CanaryApp: App {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 DictionarySync.shared.kick()
+                SettingsSync.sync()
             }
         }
     }
