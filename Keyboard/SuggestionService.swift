@@ -63,14 +63,28 @@ class SuggestionService {
         self.keyPitch = keyPitch
     }
 
-    /// Feeds iOS-provided UILexicon words (contact names, single-word text
-    /// replacements) into the session's personal dictionary. Corpus words are
-    /// already first-class and are filtered out here so no consumption path
-    /// ever sees the same word from two sources; multi-word phrases fail the
-    /// store's word hygiene (text expansion is Milestone 10's business).
-    func setSupplementaryLexicon(words: [String]) {
+    /// Routes iOS-provided UILexicon entries into the session state. Entries
+    /// whose sides match case-insensitively are vocabulary (contact names)
+    /// and join the personal dictionary — corpus words filtered out so no
+    /// consumption path sees a word from two sources. Entries whose sides
+    /// differ are text-replacement pairs ("omw" → "On my way!"), including
+    /// the multi-word phrases the word path drops; they join the session
+    /// shortcut map.
+    func setSupplementaryLexicon(entries: [(userInput: String, documentText: String)]) {
         guard let store = usageStore else { return }
-        store.setExternalWords(words.filter { !lexiconContains($0.lowercased()) })
+        var words: [String] = []
+        var pairs: [(trigger: String, phrase: String)] = []
+        for entry in entries {
+            if entry.userInput.lowercased() == entry.documentText.lowercased() {
+                if !lexiconContains(entry.documentText.lowercased()) {
+                    words.append(entry.documentText)
+                }
+            } else {
+                pairs.append((trigger: entry.userInput, phrase: entry.documentText))
+            }
+        }
+        store.setExternalWords(words)
+        store.setExternalShortcuts(pairs)
     }
     /// The prefix from the PREVIOUS `updateContext`, used to detect a word commit:
     /// a non-empty previous prefix followed by an empty one means the user just

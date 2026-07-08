@@ -123,7 +123,7 @@
 **Goal**: Add custom shortcuts that expand to longer phrases
 
 ### Shortcut System
-- [ ] Create shortcut definition and storage system
+- [x] Create shortcut definition and storage system
 - [ ] Implement shortcut detection during typing
 - [ ] Add automatic expansion when shortcuts are typed
 - [ ] Create UI for managing custom shortcuts in main app

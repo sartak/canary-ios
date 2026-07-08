@@ -85,9 +85,9 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // owns the source, so it is re-fetched each launch, never persisted.
         // The completion can arrive off the main queue.
         requestSupplementaryLexicon { [weak self] lexicon in
-            let words = lexicon.entries.map { $0.documentText }
+            let entries = lexicon.entries.map { (userInput: $0.userInput, documentText: $0.documentText) }
             DispatchQueue.main.async {
-                self?.suggestionService.setSupplementaryLexicon(words: words)
+                self?.suggestionService.setSupplementaryLexicon(entries: entries)
             }
         }
     }
