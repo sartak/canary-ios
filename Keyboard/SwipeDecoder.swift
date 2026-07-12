@@ -277,7 +277,19 @@ final class SwipeDecoder {
                                          loopBonus: loopBonus))
         }
 
-        let ranked = Array(scored.sorted { $0.logScore > $1.logScore }.prefix(limit))
+        // sorted(by:) is not guaranteed stable, and exact score ties are real:
+        // "can't" and "cant" share a template (apostrophes have no key) AND a
+        // corpus count (the count source strips apostrophes). Ties break
+        // toward the lexicon's rank order, which the query already sorted by
+        // — rank knows "can't" outranks "cant" even when the counts agree.
+        let ranked = Array(scored.enumerated()
+            .sorted {
+                $0.element.logScore != $1.element.logScore
+                    ? $0.element.logScore > $1.element.logScore
+                    : $0.offset < $1.offset
+            }
+            .map(\.element)
+            .prefix(limit))
         return (ranked, skipped)
     }
 

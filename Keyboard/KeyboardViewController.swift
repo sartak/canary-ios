@@ -770,7 +770,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         var centers: [Character: CGPoint] = [:]
         for keyData in keyboardTouchView.keyData {
             guard let character = keyData.key.simpleCharacter,
-                  let lowered = character.lowercased().first else { continue }
+                  let lowered = character.lowercased().first,
+                  lowered.isLetter else { continue }
             let frame = keyData.viewFrame
             centers[lowered] = CGPoint(x: frame.midX, y: frame.midY)
         }

@@ -7,9 +7,12 @@
 
 import CoreGraphics
 
-/// Lowercased character → center of its key, in KeyboardTouchView coordinates.
+/// Lowercased LETTER → center of its key, in KeyboardTouchView coordinates.
 /// Built from the alpha layer's KeyData.viewFrame midpoints, so templates
 /// automatically track the active layout, split, and device geometry.
+/// Letters only, by contract: punctuation keys must not enter templates
+/// ("can't" would detour to the apostrophe key no swipe visits), and their
+/// shifted variants (' → ") would make the centers shift-dependent.
 struct KeyCenters: Equatable {
     let centers: [Character: CGPoint]
 }
