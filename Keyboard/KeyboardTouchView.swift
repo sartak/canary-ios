@@ -504,9 +504,10 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
     // MARK: - Swipe-mode letter treatment
 
     /// Dim factor for swipe-only mode on this key, or nil when it doesn't
-    /// apply. Dimmed keys are exactly the tap-inert ones (letters — the same
-    /// rule the controller blocks with), so the apostrophe, which stays
-    /// tappable because it cannot be swiped, keeps full brightness.
+    /// apply. All letters dim — deliberately broader than the controller's
+    /// tap-blocking rule, which exempts "a" and "i" (they're words; a single
+    /// key can't be swiped) while keeping their dimmed look. Non-letters like
+    /// the apostrophe stay tappable and keep full brightness.
     private func swipeDimFactor(for key: KeyData) -> CGFloat? {
         guard swipeOnlyActive, case .simple(let text) = key.key.keyType,
               let first = text.lowercased().first, first.isLetter else {

@@ -541,7 +541,12 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
               let first = text.lowercased().first, first.isLetter else {
             return false
         }
-        return true
+        // "a" and "i" are words, and a single key cannot be swiped — they
+        // stay tappable. They still DIM with the other letters (the dim
+        // predicate is deliberately broader than this one): the mode's
+        // look stays uniform, and the popout on tap shows they work.
+        let lowered = text.lowercased()
+        return lowered != "a" && lowered != "i"
     }
 
     private func handleKeyTouchDown(_ keyData: KeyData) {
