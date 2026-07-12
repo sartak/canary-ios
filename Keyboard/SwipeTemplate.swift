@@ -7,12 +7,13 @@
 
 import CoreGraphics
 
-/// Lowercased LETTER → center of its key, in KeyboardTouchView coordinates.
-/// Built from the alpha layer's KeyData.viewFrame midpoints, so templates
-/// automatically track the active layout, split, and device geometry.
-/// Letters only, by contract: punctuation keys must not enter templates
-/// ("can't" would detour to the apostrophe key no swipe visits), and their
-/// shifted variants (' → ") would make the centers shift-dependent.
+/// Lowercased character → center of its key, in KeyboardTouchView
+/// coordinates. Built from the alpha layer's KeyData.viewFrame midpoints, so
+/// templates automatically track the active layout, split, and device
+/// geometry. Letters plus the apostrophe, by contract — the apostrophe is an
+/// optional swipe target for contractions (see SwipeTemplateCache) — and the
+/// builder records it under its unshifted identity so shift (' → ") cannot
+/// change the centers. Other punctuation must not enter templates.
 struct KeyCenters: Equatable {
     let centers: [Character: CGPoint]
 }
@@ -93,16 +94,26 @@ struct SwipeTemplate {
 /// decoded against hundreds of candidates per swipe; caching keeps repeat
 /// swipes allocation-light. Invalidated wholesale when geometry changes
 /// (rotation, layout switch) or capacity is exceeded.
+///
+/// Apostrophe words get up to TWO templates: the letter-only path (the
+/// natural swipe — most users never visit the apostrophe key) and a variant
+/// traveling through the apostrophe key, so a deliberate detour is an
+/// unambiguous "I mean the contraction" that beats the plain-word twin
+/// ("we're" vs "were") instead of losing to its higher prior. The decoder
+/// scores every variant and keeps the best.
 final class SwipeTemplateCache {
     private var keyCenters: KeyCenters
+    /// `keyCenters` without the apostrophe, for the letter-only variant.
+    private var letterCenters: KeyCenters
     private let resampleCount: Int
     private let capacity: Int
-    private var cache: [String: SwipeTemplate?] = [:]
+    private var cache: [String: [SwipeTemplate]] = [:]
 
     init(keyCenters: KeyCenters,
          resampleCount: Int = SwipeTuning.resampleCount,
          capacity: Int = SwipeTuning.templateCacheCapacity) {
         self.keyCenters = keyCenters
+        self.letterCenters = Self.lettersOnly(keyCenters)
         self.resampleCount = resampleCount
         self.capacity = capacity
     }
@@ -110,20 +121,36 @@ final class SwipeTemplateCache {
     func updateKeyCenters(_ newCenters: KeyCenters) {
         guard newCenters != keyCenters else { return }
         keyCenters = newCenters
+        letterCenters = Self.lettersOnly(newCenters)
         cache.removeAll(keepingCapacity: true)
     }
 
-    /// Returns the word's template for the current geometry, or nil for
-    /// words that cannot be swiped (memoized either way).
-    func template(for word: String) -> SwipeTemplate? {
+    /// The word's template variants for the current geometry, best-effort:
+    /// letter-only first, then (for apostrophe words, when the layout has an
+    /// apostrophe key) the apostrophe-explicit variant. Empty for words that
+    /// cannot be swiped (memoized either way).
+    func templates(for word: String) -> [SwipeTemplate] {
         if let cached = cache[word] {
             return cached
         }
         if cache.count >= capacity {
             cache.removeAll(keepingCapacity: true)
         }
-        let template = SwipeTemplate.make(word: word, keyCenters: keyCenters, resampleCount: resampleCount)
-        cache[word] = template
-        return template
+        var variants: [SwipeTemplate] = []
+        if let letters = SwipeTemplate.make(word: word, keyCenters: letterCenters,
+                                            resampleCount: resampleCount) {
+            variants.append(letters)
+        }
+        if word.contains("'"), keyCenters.centers["'"] != nil,
+           let explicit = SwipeTemplate.make(word: word, keyCenters: keyCenters,
+                                             resampleCount: resampleCount) {
+            variants.append(explicit)
+        }
+        cache[word] = variants
+        return variants
+    }
+
+    private static func lettersOnly(_ centers: KeyCenters) -> KeyCenters {
+        KeyCenters(centers: centers.centers.filter { $0.key.isLetter })
     }
 }

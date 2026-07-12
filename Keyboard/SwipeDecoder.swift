@@ -200,62 +200,10 @@ final class SwipeDecoder {
         var skipped = 0
 
         for entry in entries {
-            guard let template = cache.template(for: entry.word) else {
+            let templates = cache.templates(for: entry.word)
+            if templates.isEmpty {
                 skipped += 1
                 continue
-            }
-
-            // Length pruning. Live keeps long templates (the user may still be
-            // mid-word) and drops only those already too short to still match.
-            if live {
-                if template.idealArcLength < userArcLength / SwipeTuning.lengthRatioLimit {
-                    skipped += 1
-                    continue
-                }
-            } else {
-                let ratio = userArcLength / template.idealArcLength
-                if ratio < 1 / SwipeTuning.lengthRatioLimit || ratio > SwipeTuning.lengthRatioLimit {
-                    skipped += 1
-                    continue
-                }
-            }
-
-            // For a live prefix, compare against the template truncated to the
-            // arc length drawn so far; otherwise use the precomputed full word.
-            let templatePoints: [CGPoint]
-            let templateNormalized: [CGPoint]
-            if live && userArcLength < template.idealArcLength {
-                let head = PathGeometry.truncated(template.polyline, atArcLength: userArcLength)
-                let resampled = PathGeometry.resample(head, count: SwipeTuning.resampleCount)
-                templatePoints = resampled
-                templateNormalized = PathGeometry.normalized(resampled, toSize: 1)
-            } else {
-                templatePoints = template.points
-                templateNormalized = template.normalizedPoints
-            }
-
-            let xs = PathGeometry.meanPointwiseDistance(userNormalized, templateNormalized)
-            let xl = PathGeometry.weightedPointwiseDistance(userResampled, templatePoints,
-                                                            weights: weights) / keyPitch
-
-            // Double-letter loop bonus: each detected loop that matches one of
-            // this candidate's doubled letters adds `doubleLetterBonus`. Matched
-            // template entries are consumed so two loops can't claim one double;
-            // unmatched loops cost nothing (excision already neutralized them).
-            // Live decodes match on character only (§4.10).
-            var loopBonus = 0.0
-            if !loopEvents.isEmpty && !template.doubledLetters.isEmpty {
-                var available = template.doubledLetters
-                for event in loopEvents {
-                    if let matchIndex = available.firstIndex(where: { doubled in
-                        doubled.character == event.character
-                            && (live || abs(doubled.arcFraction - event.arcFraction)
-                                        <= SwipeTuning.loopMatchTolerance)
-                    }) {
-                        loopBonus += SwipeTuning.doubleLetterBonus
-                        available.remove(at: matchIndex)
-                    }
-                }
             }
 
             // Frequency prior: log P(w) = log(count) − log(total), with true
@@ -263,25 +211,94 @@ final class SwipeDecoder {
             // adds mass so the user's own vocabulary wins geometric ties
             // (swipe→scope, canary). `personalCount` is a dictionary hit — no SQL
             // — so this stays cheap per candidate; the `lowercased()` allocates,
-            // which the design accepts. Clamped against log(0).
+            // which the design accepts. Clamped against log(0). Template-
+            // independent, so computed once per word.
             let personal = usageStore?.personalCount(for: entry.word.lowercased()) ?? 0
             let effectiveCount = entry.frequency + LearningTuning.personalCountBoost * personal
             let logPrior = log(Double(max(effectiveCount, 1))) - logTotalFrequency
-            let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
-                - Double(xl * xl) / (2 * Self.sigmaLocationSq)
-                + SwipeTuning.lmWeight * logPrior
-                + loopBonus
 
-            scored.append(SwipeCandidate(word: entry.word, logScore: logScore,
-                                         shapeDistance: xs, locationDistance: xl,
-                                         loopBonus: loopBonus))
+            // Apostrophe words carry two template variants (letter-only and
+            // through-the-apostrophe); the word scores as its best variant, so
+            // a deliberate detour through ' matches the explicit template and
+            // beats the plain-word twin.
+            var best: SwipeCandidate?
+            for template in templates {
+                // Length pruning. Live keeps long templates (the user may still
+                // be mid-word) and drops only those already too short to match.
+                if live {
+                    if template.idealArcLength < userArcLength / SwipeTuning.lengthRatioLimit {
+                        continue
+                    }
+                } else {
+                    let ratio = userArcLength / template.idealArcLength
+                    if ratio < 1 / SwipeTuning.lengthRatioLimit || ratio > SwipeTuning.lengthRatioLimit {
+                        continue
+                    }
+                }
+
+                // For a live prefix, compare against the template truncated to the
+                // arc length drawn so far; otherwise use the precomputed full word.
+                let templatePoints: [CGPoint]
+                let templateNormalized: [CGPoint]
+                if live && userArcLength < template.idealArcLength {
+                    let head = PathGeometry.truncated(template.polyline, atArcLength: userArcLength)
+                    let resampled = PathGeometry.resample(head, count: SwipeTuning.resampleCount)
+                    templatePoints = resampled
+                    templateNormalized = PathGeometry.normalized(resampled, toSize: 1)
+                } else {
+                    templatePoints = template.points
+                    templateNormalized = template.normalizedPoints
+                }
+
+                let xs = PathGeometry.meanPointwiseDistance(userNormalized, templateNormalized)
+                let xl = PathGeometry.weightedPointwiseDistance(userResampled, templatePoints,
+                                                                weights: weights) / keyPitch
+
+                // Double-letter loop bonus: each detected loop that matches one of
+                // this candidate's doubled letters adds `doubleLetterBonus`. Matched
+                // template entries are consumed so two loops can't claim one double;
+                // unmatched loops cost nothing (excision already neutralized them).
+                // Live decodes match on character only (§4.10).
+                var loopBonus = 0.0
+                if !loopEvents.isEmpty && !template.doubledLetters.isEmpty {
+                    var available = template.doubledLetters
+                    for event in loopEvents {
+                        if let matchIndex = available.firstIndex(where: { doubled in
+                            doubled.character == event.character
+                                && (live || abs(doubled.arcFraction - event.arcFraction)
+                                            <= SwipeTuning.loopMatchTolerance)
+                        }) {
+                            loopBonus += SwipeTuning.doubleLetterBonus
+                            available.remove(at: matchIndex)
+                        }
+                    }
+                }
+
+                let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
+                    - Double(xl * xl) / (2 * Self.sigmaLocationSq)
+                    + SwipeTuning.lmWeight * logPrior
+                    + loopBonus
+
+                if best == nil || logScore > best!.logScore {
+                    best = SwipeCandidate(word: entry.word, logScore: logScore,
+                                          shapeDistance: xs, locationDistance: xl,
+                                          loopBonus: loopBonus)
+                }
+            }
+
+            if let best {
+                scored.append(best)
+            } else {
+                skipped += 1
+            }
         }
 
         // sorted(by:) is not guaranteed stable, and exact score ties are real:
-        // "can't" and "cant" share a template (apostrophes have no key) AND a
-        // corpus count (the count source strips apostrophes). Ties break
-        // toward the lexicon's rank order, which the query already sorted by
-        // — rank knows "can't" outranks "cant" even when the counts agree.
+        // a swipe that skips the apostrophe scores "can't" (letter-only
+        // variant) and "cant" identically — same path, same corpus count (the
+        // count source strips apostrophes). Ties break toward the lexicon's
+        // rank order, which the query already sorted by — rank knows "can't"
+        // outranks "cant" even when the counts agree.
         let ranked = Array(scored.enumerated()
             .sorted {
                 $0.element.logScore != $1.element.logScore
@@ -490,7 +507,7 @@ final class SwipeDecoder {
             // When loops were detected, show where each candidate's doubled
             // letters sit so match/no-match is diagnosable from one line.
             if !loopEvents.isEmpty,
-               let doubled = cache.template(for: candidate.word)?.doubledLetters,
+               let doubled = cache.templates(for: candidate.word).first?.doubledLetters,
                !doubled.isEmpty {
                 loopTerm += " dbl=[" + doubled.map {
                     "\($0.character)@" + String(format: "%.2f", Double($0.arcFraction))

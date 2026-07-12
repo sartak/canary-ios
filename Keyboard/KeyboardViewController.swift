@@ -775,8 +775,12 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         var centers: [Character: CGPoint] = [:]
         for keyData in keyboardTouchView.keyData {
             guard let character = keyData.key.simpleCharacter,
-                  let lowered = character.lowercased().first,
-                  lowered.isLetter else { continue }
+                  var lowered = character.lowercased().first else { continue }
+            // The apostrophe key is a swipe target for contractions; record
+            // it under its unshifted identity so shift (' -> ") can't change
+            // the centers. Other punctuation stays out of templates.
+            if lowered == "\"" { lowered = "'" }
+            guard lowered.isLetter || lowered == "'" else { continue }
             let frame = keyData.viewFrame
             centers[lowered] = CGPoint(x: frame.midX, y: frame.midY)
         }
