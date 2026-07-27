@@ -127,6 +127,20 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         }
     }
 
+    /// needsInputModeSwitchKey is inaccurate before the connection to the
+    /// host app is established, and the first layout pass can beat that
+    /// connection (iOS logs a warning when it does). Re-ask once the keyboard
+    /// is fully on screen and rebuild if the early answer was wrong, so the
+    /// globe key can't stick in the wrong state.
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        let needed = needsInputModeSwitchKey
+        if keyboardTouchView != nil, needed != needsGlobe {
+            needsGlobe = needed
+            rebuildKeyboard()
+        }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 
