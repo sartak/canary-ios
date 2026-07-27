@@ -80,6 +80,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        // Names this device's row in the stats devices table (kept out of
+        // UsageStore so it stays UIKit-free for the test target).
+        usageStore?.localDeviceName = UIDevice.current.name
+
         // iOS-provided personal vocabulary (contact names, single-word text
         // replacements) joins the personal dictionary for this session. iOS
         // owns the source, so it is re-fetched each launch, never persisted.
@@ -697,6 +701,22 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     private func performKeyAction(_ keyData: KeyData) {
         keyData.key.didTap()
 
+        switch keyData.key.keyType {
+        case .simple(let text):
+            usageStore?.recordKeyEvent(.character, key: text)
+        case .space:
+            usageStore?.recordKeyEvent(.space)
+        case .backspace:
+            usageStore?.recordKeyEvent(.backspace)
+            suggestionService.noteBackspace()
+        case .enter:
+            usageStore?.recordKeyEvent(.enter)
+        case .layerSwitch(let layer):
+            usageStore?.recordKeyEvent(.layer, key: String(describing: layer))
+        default:
+            break
+        }
+
         // Provide haptic feedback for each repeat
         HapticFeedback.shared.keyPress(for: keyData.key, hasFullAccess: hasFullAccess)
 
@@ -878,6 +898,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
         executeActions(result.actions)
         autoShift()
+        usageStore?.recordKeyEvent(.swipe)
 
         // A swiped trigger expands exactly like a typed one — the swipe's
         // auto-inserted trailing space is the boundary. Skip usage counting
@@ -908,7 +929,7 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // transition (nothing was typed), so bump personal usage explicitly.
         // Their casing comes from stored casing + shift state, not from the
         // user's fingers — count the use, don't treat it as casing evidence.
-        suggestionService.recordCommittedWord(result.word, trustCasing: false)
+        suggestionService.recordCommittedWord(result.word, trustCasing: false, source: .swipe)
         pendingSwipeContext = PendingSwipeContext(
             path: path,
             committed: result.word,

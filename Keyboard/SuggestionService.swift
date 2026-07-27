@@ -111,6 +111,23 @@ class SuggestionService {
     /// commit can attribute the count to the CORRECTED word even when it shares no
     /// prefix with what was typed (e.g. "teh" → "the"). Consumed once, then cleared.
     private var lastAppliedCorrection: String?
+    /// The most recent autocorrect application, for silent-revert detection.
+    private var lastAutocorrectApplication: (typed: String, corrected: String, at: Date)?
+
+    /// Seconds after an apply within which a backspace counts as a revert.
+    private static let revertWindow: TimeInterval = 3
+
+    /// Called on every backspace press: a backspace inside the revert window
+    /// after an autocorrect applied logs the silent rejection (the user is
+    /// undoing/retyping rather than tapping the bar). One-shot per apply.
+    func noteBackspace() {
+        guard let application = lastAutocorrectApplication else { return }
+        lastAutocorrectApplication = nil
+        guard Date().timeIntervalSince(application.at) < Self.revertWindow else { return }
+        usageStore?.recordTapEvent(kind: .autocorrectReverted,
+                                   typed: application.typed,
+                                   resolved: application.corrected)
+    }
 
     /// Prepared existence check against the shipped lexicon, so promotions and the
     /// rejection fast-track never "learn" a word the corpus already knows.
@@ -188,8 +205,19 @@ class SuggestionService {
                      shiftState: ShiftState) -> SwipeDecodeResult? {
         guard !path.isEmpty else { return nil }
 
+        let decodeStart = CFAbsoluteTimeGetCurrent()
         let candidates = swipeDecoder.decode(path: path, keyCenters: keyCenters, keyPitch: keyPitch)
         guard let best = candidates.first else { return nil }
+
+        // Per-swipe telemetry (opt-in): duration, path length in key pitches,
+        // pool size, and the top-two score margin — the distribution every
+        // future decoder change gets judged against.
+        usageStore?.recordSwipeEvent(
+            word: best.word,
+            durationMS: (CFAbsoluteTimeGetCurrent() - decodeStart) * 1000,
+            arcLengthPitches: keyPitch > 0 ? Double(PathGeometry.arcLength(path) / keyPitch) : 0,
+            candidateCount: candidates.count,
+            scoreMargin: candidates.count > 1 ? best.logScore - candidates[1].logScore : nil)
 
         let committedWord = applySmartCapitalization(word: best.word, userPrefix: "", userSuffix: "", shiftState: shiftState)
         let actions: [InputAction] = [.insert(committedWord + " "), .maybePunctuating(true)]
@@ -233,6 +261,9 @@ class SuggestionService {
     func noteAutocorrectApplied() {
         guard let correction = autocorrectSuggestion else { return }
         usageStore?.recordTapEvent(kind: .autocorrectApplied, typed: lastTypedWord, resolved: correction)
+        // Armed for silent-revert detection: a backspace shortly after an
+        // apply is a rejection the bar-tap path never sees (see noteBackspace).
+        lastAutocorrectApplication = (typed: lastTypedWord, corrected: correction, at: Date())
         // Remember the correction so the imminent word-commit counts the CORRECTED
         // word (see detectWordCommit). Built-in safety: because the committed
         // context word is the correction — never the typo — a misspelling can
@@ -870,8 +901,10 @@ class SuggestionService {
     /// and hasn't already learned, promotes it to the learned set. Pass
     /// `trustCasing: false` when the word's capitalization is not the user's own
     /// doing (sentence-start auto-shift, swipe-inserted casing).
-    func recordCommittedWord(_ word: String, trustCasing: Bool = true) {
+    func recordCommittedWord(_ word: String, trustCasing: Bool = true,
+                             source: WordEventSource = .tap) {
         guard let store = usageStore else { return }
+        store.recordWordEvent(word: word, source: source)
         let count = store.bumpWordUsage(word, trustCasing: trustCasing)
         guard count >= LearningTuning.promotionThreshold else { return }
         let lower = word.lowercased()

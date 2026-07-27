@@ -9,12 +9,34 @@ import CoreGraphics
 import Foundation
 import SQLite3
 
+/// Keystroke kinds for the stats event stream. Characters are stored for
+/// .character events — a deliberate choice for a personal app, and the
+/// whole stream is OPT-IN (Settings › Collect Typing Stats, per-device).
+enum KeyEventKind: Int {
+    case character = 0
+    case space = 1
+    case backspace = 2
+    case enter = 3
+    case swipe = 4
+    /// A layer-switch press; `key` stores the destination layer name.
+    case layer = 5
+}
+
+/// How a word event's word was entered.
+enum WordEventSource: Int {
+    case tap = 0
+    case swipe = 1
+}
+
 /// Kinds of tap-typing correction signal we log (swiping.md §9, PLAN.md M9).
 enum TapEventKind: String {
     case autocorrectApplied = "autocorrect_applied"
     case autocorrectRejected = "autocorrect_rejected"
     case suggestionPicked = "suggestion_picked"
     case shortcutExpanded = "shortcut_expanded"
+    /// Backspace shortly after an autocorrect applied: the silent rejection
+    /// the bar-tap path never sees.
+    case autocorrectReverted = "autocorrect_reverted"
 }
 
 /// Every tunable constant for word learning + personal frequency, in one place
@@ -88,6 +110,28 @@ final class UsageStore {
     /// Upper bound on session shortcut pairs accepted from UILexicon.
     private static let externalShortcutCap = 500
 
+    /// Cached insert for the per-keystroke event stream (hot path: one write
+    /// per key press; preparing per call would be pure waste).
+    private var keyEventStatement: OpaquePointer?
+
+    /// Human-readable name for this device's row in `devices`, set by the
+    /// controller (UIKit stays out of this file). Row creation falls back to
+    /// a placeholder if never set.
+    var localDeviceName: String?
+    /// This device's `devices.id`, resolved once per process from the stable
+    /// per-device UUID in KeyboardSettings. Every event row carries it.
+    private var cachedDeviceID: Int64?
+
+    /// Days of keystroke/word events retained; older rows trim at open.
+    private static let eventRetentionDays = 90.0
+
+    /// Opt-in master switch for the behavioral streams (key events, word
+    /// events, tap events, swipe corrections), per-device via
+    /// KeyboardSettings — deliberately NOT synced. Off by default: nothing
+    /// records until the app's Settings enables it. Learning and personal
+    /// frequency are unaffected either way.
+    private var statsEnabled: Bool { KeyboardSettings.statsCollectionEnabled }
+
     /// Upper bound on session words accepted from UILexicon.
     private static let externalWordCap = 2000
 
@@ -98,8 +142,8 @@ final class UsageStore {
     /// openAndProvision's fallback).
     static let appGroupID = "group.net.rpglanguage.Canary"
 
-    /// The extension-private location usage.db lived at before the App Group;
-    /// the migration source, and the fallback when Full Access is off.
+    /// The extension-private location, used only as the fallback when the
+    /// group container is unusable (Full Access off).
     private let legacyDBURL: URL?
 
     /// Resolves the on-disk paths; does NOT open the database yet.
@@ -124,6 +168,7 @@ final class UsageStore {
     }
 
     deinit {
+        if let keyEventStatement { sqlite3_finalize(keyEventStatement) }
         if let db = db { sqlite3_close(db) }
     }
 
@@ -143,7 +188,7 @@ final class UsageStore {
     func recordSwipeCorrection(path: [CGPoint], committed: String, corrected: String,
                                ranked: [String], layout: String,
                                keyboardSize: CGSize, keyPitch: CGFloat) {
-        guard let db = connection() else { return }
+        guard statsEnabled, let db = connection() else { return }
 
         let pathString = path.map { String(format: "%.1f,%.1f", $0.x, $0.y) }.joined(separator: ";")
         let rankedJSON = jsonArray(ranked)
@@ -178,10 +223,95 @@ final class UsageStore {
         print("UsageStore: swipe correction '\(committed)' -> '\(corrected)' (path \(path.count) pts)")
     }
 
+    /// This device's row id in `devices`, created on first use from the
+    /// stable per-device UUID. Every event row carries it, so streams from
+    /// several devices could someday share a table without ambiguity.
+    private func deviceID(_ db: OpaquePointer) -> Int64? {
+        if let cachedDeviceID { return cachedDeviceID }
+        let uuid = KeyboardSettings.statsDeviceUUID
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO devices (uuid, name, created_at) VALUES (?, ?, ?) ON CONFLICT(uuid) DO UPDATE SET name = excluded.name RETURNING id",
+                                 -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return nil }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, uuid, -1, transient)
+        sqlite3_bind_text(statement, 2, localDeviceName ?? "This Device", -1, transient)
+        sqlite3_bind_double(statement, 3, Date().timeIntervalSince1970)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        let id = sqlite3_column_int64(statement, 0)
+        cachedDeviceID = id
+        return id
+    }
+
+    /// One keystroke for the stats stream. Best-effort like everything here;
+    /// the cached statement makes the hot path a bind+step.
+    func recordKeyEvent(_ kind: KeyEventKind, key: String? = nil) {
+        guard statsEnabled, let db = connection(), let device = deviceID(db) else { return }
+        if keyEventStatement == nil {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "INSERT INTO key_events (created_at, device_id, kind, key) VALUES (?, ?, ?, ?)",
+                                     -1, &stmt, nil) == SQLITE_OK else {
+                return
+            }
+            keyEventStatement = stmt
+        }
+        guard let statement = keyEventStatement else { return }
+        sqlite3_reset(statement)
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 2, device)
+        sqlite3_bind_int64(statement, 3, Int64(kind.rawValue))
+        if let key {
+            sqlite3_bind_text(statement, 4, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        } else {
+            sqlite3_bind_null(statement, 4)
+        }
+        _ = sqlite3_step(statement)
+    }
+
+    /// One committed word for the stats stream (time-resolved counterpart of
+    /// word_usage's aggregate counts).
+    func recordWordEvent(word: String, source: WordEventSource) {
+        guard statsEnabled, let db = connection(), let device = deviceID(db) else { return }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO word_events (created_at, device_id, word_lower, source) VALUES (?, ?, ?, ?)",
+                                 -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 2, device)
+        sqlite3_bind_text(statement, 3, word.lowercased(), -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_int64(statement, 4, Int64(source.rawValue))
+        _ = sqlite3_step(statement)
+    }
+
+    /// Per-swipe decode telemetry: the tuning dataset. Margin is the log-score
+    /// gap between the top two candidates (nil when only one) — near-miss vs
+    /// blowout is the question every future decoder change will ask.
+    func recordSwipeEvent(word: String, durationMS: Double, arcLengthPitches: Double,
+                          candidateCount: Int, scoreMargin: Double?) {
+        guard statsEnabled, let db = connection(), let device = deviceID(db) else { return }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO swipe_events (created_at, device_id, word_lower, duration_ms, arc_length, candidates, margin) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                 -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 2, device)
+        sqlite3_bind_text(statement, 3, word.lowercased(), -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_double(statement, 4, durationMS)
+        sqlite3_bind_double(statement, 5, arcLengthPitches)
+        sqlite3_bind_int64(statement, 6, Int64(candidateCount))
+        if let scoreMargin {
+            sqlite3_bind_double(statement, 7, scoreMargin)
+        } else {
+            sqlite3_bind_null(statement, 7)
+        }
+        _ = sqlite3_step(statement)
+    }
+
     /// A tap-typing correction signal: autocorrect applied/rejected, or a
     /// typeahead suggestion picked.
     func recordTapEvent(kind: TapEventKind, typed: String, resolved: String) {
-        guard let db = connection() else { return }
+        guard statsEnabled, let db = connection() else { return }
 
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, """
@@ -629,7 +759,6 @@ final class UsageStore {
     }
 
     private func openAndProvision() -> OpaquePointer? {
-        migrateLegacyDatabaseIfNeeded()
         if let opened = open(at: dbURL) {
             return opened
         }
@@ -660,61 +789,34 @@ final class UsageStore {
         // The app process shares this database now; briefly wait out its
         // writes instead of failing statements.
         exec(opened, "PRAGMA busy_timeout=250;")
-        migrateForSync(opened)
+        // WAL-safe durability relaxation: per-keystroke event inserts must not
+        // fsync each commit (a crash can lose the last moments of stats; the
+        // learning data tolerates the same and always has).
+        exec(opened, "PRAGMA synchronous=NORMAL;")
+        // Pre-release databases (any stamp but '1') recreate the stats event
+        // tables instead of carrying migrations into v1 — they hold only
+        // opt-in data. Everything else was always additive CREATEs.
+        if metaVersion(opened) != "1" {
+            for table in ["key_events", "word_events", "swipe_events"] {
+                exec(opened, "DROP TABLE IF EXISTS \(table);")
+            }
+        }
         exec(opened, Self.schemaSQL)
+        let cutoff = Date().timeIntervalSince1970 - Self.eventRetentionDays * 86_400
+        exec(opened, "DELETE FROM key_events WHERE created_at < \(cutoff);")
+        exec(opened, "DELETE FROM word_events WHERE created_at < \(cutoff);")
+        exec(opened, "DELETE FROM swipe_events WHERE created_at < \(cutoff);")
         return opened
     }
 
-    /// Pre-v5 databases lack the sync bookkeeping columns; fresh databases get
-    /// them from the CREATE statements, so the ALTERs run exactly once, gated
-    /// on the recorded version (everything starts dirty: never-synced rows
-    /// must push).
-    private func migrateForSync(_ db: OpaquePointer) {
-        var version = 0
+    /// The recorded schema stamp, or "" (fresh database / pre-meta).
+    private func metaVersion(_ db: OpaquePointer) -> String {
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'schema_version'", -1, &stmt, nil) == SQLITE_OK,
-           let statement = stmt {
-            if sqlite3_step(statement) == SQLITE_ROW, let valuePtr = sqlite3_column_text(statement, 0) {
-                version = Int(String(cString: valuePtr)) ?? 0
-            }
-            sqlite3_finalize(statement)
-        }
-        guard version >= 1, version < 5 else { return }
-        for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts"] {
-            exec(db, "ALTER TABLE \(table) ADD COLUMN dirty INTEGER NOT NULL DEFAULT 1;")
-        }
-        // Shortcut deletions must propagate as tombstones (absence is not
-        // deletion in the merge rules), so removal is a soft delete.
-        exec(db, "ALTER TABLE shortcuts ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")
-        print("UsageStore: migrated schema v\(version) for sync bookkeeping")
-    }
-
-    /// One-time move of usage.db (plus WAL sidecars, which carry unflushed
-    /// commits) from the extension-private container into the App Group.
-    /// Without Full Access the moves fail silently and the fallback keeps
-    /// using the legacy file; the migration then runs when access is granted.
-    private func migrateLegacyDatabaseIfNeeded() {
-        guard let legacyDBURL, legacyDBURL != dbURL,
-              FileManager.default.fileExists(atPath: legacyDBURL.path),
-              !FileManager.default.fileExists(atPath: dbURL.path) else { return }
-
-        let directory = dbURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var movedMain = false
-        for suffix in ["", "-wal", "-shm"] {
-            let from = URL(fileURLWithPath: legacyDBURL.path + suffix)
-            guard FileManager.default.fileExists(atPath: from.path) else { continue }
-            let to = URL(fileURLWithPath: dbURL.path + suffix)
-            do {
-                try FileManager.default.moveItem(at: from, to: to)
-                if suffix.isEmpty { movedMain = true }
-            } catch {
-                if suffix.isEmpty { return }  // main file didn't move; sidecars stay with it
-            }
-        }
-        if movedMain {
-            print("UsageStore: migrated usage.db into the app group container")
-        }
+        guard sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'schema_version'", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else { return "" }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW, let valuePtr = sqlite3_column_text(statement, 0) else { return "" }
+        return String(cString: valuePtr)
     }
 
     private static let schemaSQL = """
@@ -771,13 +873,46 @@ final class UsageStore {
             key TEXT PRIMARY KEY,
             value BLOB NOT NULL
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS key_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            device_id INTEGER NOT NULL REFERENCES devices(id),
+            kind INTEGER NOT NULL,
+            key TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_key_events_time ON key_events(created_at);
+        CREATE TABLE IF NOT EXISTS word_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            device_id INTEGER NOT NULL REFERENCES devices(id),
+            word_lower TEXT NOT NULL,
+            source INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_word_events_time ON word_events(created_at);
+        CREATE TABLE IF NOT EXISTS swipe_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            device_id INTEGER NOT NULL REFERENCES devices(id),
+            word_lower TEXT NOT NULL,
+            duration_ms REAL NOT NULL,
+            arc_length REAL NOT NULL,
+            candidates INTEGER NOT NULL,
+            margin REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_swipe_events_time ON swipe_events(created_at);
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         ) WITHOUT ROWID;
-        -- Migrations so far are purely additive IF NOT EXISTS tables; stamp the
-        -- version unconditionally (INSERT OR IGNORE would leave an old row).
-        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '5');
+        -- v1 is the honest first release schema; pre-release dev stamps get
+        -- their stats tables recreated at open instead of migrations.
+        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1');
         """
 
     // MARK: - Helpers

@@ -16,9 +16,6 @@ import Foundation
 enum KeyboardSettings {
     static let appGroupID = "group.net.rpglanguage.Canary"
 
-    private static let migrationFlagKey = "settingsMigratedToGroup"
-    private static let migratedKeys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled"]
-
     /// The group suite when usable, else `.standard`. Usability must be
     /// probed — `UserDefaults(suiteName:)` exists either way and its
     /// in-process cache can echo writes that were never persisted — and the
@@ -41,7 +38,6 @@ enum KeyboardSettings {
             print("KeyboardSettings: group suite failed to open; using standard defaults")
             return .standard
         }
-        migrateIfNeeded(into: suite)
         return suite
     }()
 
@@ -60,6 +56,16 @@ enum KeyboardSettings {
         set { setStamped(newValue, forKey: "debugVisualizationEnabled") }
     }
 
+    /// Whether the behavioral stats streams (keystrokes, word events, tap
+    /// events, swipe corrections) are collected. OPT-IN: nothing is recorded
+    /// until the app's Settings enables it. Deliberately PER-DEVICE — never
+    /// listed in SettingsSync's mirrored keys — so enabling on the personal
+    /// phone can't silently enable it on a work phone.
+    static var statsCollectionEnabled: Bool {
+        get { store.bool(forKey: "statsCollectionEnabled") }
+        set { setStamped(newValue, forKey: "statsCollectionEnabled") }
+    }
+
     /// Companion change-stamp key for a setting; SettingsSync (app target)
     /// compares stamps to decide which side of the iCloud mirror is newer.
     static func changeStampKey(for key: String) -> String {
@@ -73,16 +79,12 @@ enum KeyboardSettings {
         store.set(Date().timeIntervalSince1970, forKey: changeStampKey(for: key))
     }
 
-    /// One-time copy of the pre-App-Group values out of `.standard`, which
-    /// keeps its (now stale) copies as the fallback's values. Existing suite
-    /// values are never overwritten.
-    private static func migrateIfNeeded(into suite: UserDefaults) {
-        guard !suite.bool(forKey: migrationFlagKey) else { return }
-        for key in migratedKeys where suite.object(forKey: key) == nil {
-            if let value = UserDefaults.standard.object(forKey: key) {
-                suite.set(value, forKey: key)
-            }
-        }
-        suite.set(true, forKey: migrationFlagKey)
+    /// Stable per-device identity for stats rows (the devices table).
+    /// Generated once; per-device by nature and never synced.
+    static var statsDeviceUUID: String {
+        if let existing = store.string(forKey: "statsDeviceUUID") { return existing }
+        let fresh = UUID().uuidString
+        store.set(fresh, forKey: "statsDeviceUUID")
+        return fresh
     }
 }
