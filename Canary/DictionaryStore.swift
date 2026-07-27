@@ -267,6 +267,8 @@ final class DictionaryStore {
         var autocorrectRejected = 0
         var autocorrectReverted = 0
         var charsSavedByShortcuts = 0
+        var predictionsServed = 0
+        var predictionsPicked = 0
     }
 
     /// Keystrokes per local hour of day over the window, all 24 hours present.
@@ -412,6 +414,22 @@ final class DictionaryStore {
         var id: Date { day }
     }
 
+    /// Prediction serve latencies over the window, for the median figure.
+    func predictionServeDurations(days: Int) -> [Double] {
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var result: [Double] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT duration_ms FROM prediction_events WHERE created_at >= ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(sqlite3_column_double(statement, 0))
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
     /// Swipe decode durations over the window, for the median glance figure.
     func swipeDecodeDurations(days: Int) -> [Double] {
         let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
@@ -439,6 +457,8 @@ final class DictionaryStore {
         summary.autocorrectRejected = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'autocorrect_rejected'")
         summary.autocorrectReverted = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'autocorrect_reverted'")
         summary.charsSavedByShortcuts = scalar("SELECT COALESCE(SUM(LENGTH(resolved) - LENGTH(typed)), 0) FROM tap_events WHERE kind = 'shortcut_expanded'")
+        summary.predictionsServed = scalar("SELECT COUNT(*) FROM prediction_events")
+        summary.predictionsPicked = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'prediction_picked'")
         return summary
     }
 
@@ -664,7 +684,7 @@ final class DictionaryStore {
         exec("BEGIN")
         for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts",
                       "tap_events", "swipe_corrections", "counters",
-                      "key_events", "word_events", "swipe_events", "devices"] {
+                      "key_events", "word_events", "swipe_events", "prediction_events", "devices"] {
             exec("DELETE FROM \(table)")
         }
         // Record change tags go too (the zone is about to be deleted);

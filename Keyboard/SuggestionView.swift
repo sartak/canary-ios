@@ -1,6 +1,14 @@
 import UIKit
 
 class SuggestionView: UIView {
+    /// Lowercased foundation-model words (painted predictionColor).
+    private var predictedWords: Set<String> = []
+    /// Lowercased runner-up corrections (painted autocorrectColor).
+    private var correctionWords: Set<String> = []
+    /// Whether the autocorrect slot holds a shortcut phrase preview
+    /// (painted shortcutColor instead of orange).
+    private var isShortcutPreview = false
+
     var deviceLayout: DeviceLayout
 
     private var typeaheads: [(String, [InputAction])] = []
@@ -110,7 +118,8 @@ class SuggestionView: UIView {
 
         // Create autocorrect button first if available
         if let correction = autocorrectWord {
-            let button = createButton(title: correction, textColor: theme.autocorrectColor, target: #selector(autocorrectButtonTapped), leftPadding: 0, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight, strikethrough: autocorrectWordDisabled)
+            let slotColor = isShortcutPreview ? theme.shortcutColor : theme.autocorrectColor
+            let button = createButton(title: correction, textColor: slotColor, target: #selector(autocorrectButtonTapped), leftPadding: 0, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight, strikethrough: autocorrectWordDisabled)
             if debugVisualizationEnabled {
                 button.backgroundColor = debugColor(at: buttons.count)
             }
@@ -123,7 +132,14 @@ class SuggestionView: UIView {
         for (index, (label, _)) in typeaheads.enumerated() {
             // First button overall gets no left padding, otherwise normal padding
             let leftPadding = buttons.isEmpty ? 0 : deviceLayout.suggestionGap
-            let button = createButton(title: label, textColor: theme.typeaheadTextColor, target: #selector(typeaheadButtonTapped), leftPadding: leftPadding, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight)
+            let itemColor: UIColor = if predictedWords.contains(label.lowercased()) {
+                theme.predictionColor
+            } else if correctionWords.contains(label.lowercased()) {
+                theme.autocorrectColor
+            } else {
+                theme.typeaheadTextColor
+            }
+            let button = createButton(title: label, textColor: itemColor, target: #selector(typeaheadButtonTapped), leftPadding: leftPadding, rightPadding: deviceLayout.suggestionGap, x: currentX, y: buttonY, height: buttonHeight)
             button.tag = index
             if debugVisualizationEnabled {
                 button.backgroundColor = debugColor(at: buttons.count)
@@ -155,12 +171,25 @@ class SuggestionView: UIView {
     }
 
     func suggestionService(_ service: SuggestionService, didUpdateSuggestions typeahead: [(String, [InputAction])], autocorrect: String?, frequencies: CharacterDistribution) {
-        setSuggestions(typeaheads: typeahead, autocorrect: autocorrect)
+        setSuggestions(typeaheads: typeahead, autocorrect: autocorrect,
+                       predicted: service.lastPredictedWords,
+                       corrections: service.correctionsInBar,
+                       shortcutPreview: service.pendingShortcutPreview)
     }
 
-    func setSuggestions(typeaheads: [(String, [InputAction])], autocorrect: String?) {
+    /// The three sets drive the bar's color language: orange = spelling
+    /// correction (the slot and runner-up alternates), green = shortcut
+    /// phrase preview, purple = foundation-model prediction; dictionary
+    /// completions keep the neutral typeahead color. Direct callers (swipe
+    /// replacements, cached restores) default everything off.
+    func setSuggestions(typeaheads: [(String, [InputAction])], autocorrect: String?,
+                        predicted: Set<String> = [], corrections: Set<String> = [],
+                        shortcutPreview: Bool = false) {
         self.typeaheads = typeaheads
         self.autocorrectWord = autocorrect
+        self.predictedWords = predicted
+        self.correctionWords = corrections
+        self.isShortcutPreview = shortcutPreview
         layoutSuggestions()
     }
 

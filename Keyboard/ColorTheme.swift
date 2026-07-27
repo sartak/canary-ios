@@ -101,4 +101,26 @@ enum ColorTheme {
             return UIColor.systemOrange.withAlphaComponent(0.8)
         }
     }
+
+    /// Shortcut phrase previews in the bar: green ("this will expand"),
+    /// distinct from orange ("this will correct").
+    var shortcutColor: UIColor {
+        switch self {
+        case .dark:
+            return UIColor.systemGreen.withAlphaComponent(0.9)
+        case .light:
+            return UIColor.systemGreen.withAlphaComponent(0.8)
+        }
+    }
+
+    /// Foundation-model next-word predictions: purple, the AI idiom.
+    /// Dictionary completions keep the neutral typeahead color.
+    var predictionColor: UIColor {
+        switch self {
+        case .dark:
+            return UIColor.systemPurple.withAlphaComponent(0.9)
+        case .light:
+            return UIColor.systemPurple.withAlphaComponent(0.8)
+        }
+    }
 }

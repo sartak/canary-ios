@@ -22,6 +22,7 @@ struct StatsView: View {
     @State private var slowestPairs: [PairLatency] = []
     @State private var swipeShare: [DictionaryStore.DayShare] = []
     @State private var medianDecodeMS: Double?
+    @State private var medianPredictionMS: Double?
     @State private var storeAvailable = false
 
     struct DayMetric: Identifiable {
@@ -81,6 +82,14 @@ struct StatsView: View {
                 if let medianDecodeMS {
                     LabeledContent("Median swipe decode",
                                    value: "\(medianDecodeMS.formatted(.number.precision(.fractionLength(1)))) ms")
+                }
+                if summary.predictionsServed > 0 {
+                    LabeledContent("AI predictions served", value: summary.predictionsServed.formatted())
+                    LabeledContent("AI predictions picked", value: summary.predictionsPicked.formatted())
+                    if let medianPredictionMS {
+                        LabeledContent("Median AI latency",
+                                       value: "\(medianPredictionMS.formatted(.number.precision(.fractionLength(0)))) ms")
+                    }
                 }
             }
 
@@ -299,6 +308,8 @@ struct StatsView: View {
         swipeShare = store.swipeShareByDay(days: 30)
         let durations = store.swipeDecodeDurations(days: 30).sorted()
         medianDecodeMS = durations.isEmpty ? nil : durations[durations.count / 2]
+        let serves = store.predictionServeDurations(days: 30).sorted()
+        medianPredictionMS = serves.isEmpty ? nil : serves[serves.count / 2]
         computeDerived(store.typingEvents(days: 30))
     }
 

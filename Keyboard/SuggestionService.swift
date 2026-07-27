@@ -78,6 +78,16 @@ class SuggestionService {
     /// Foundation-model next-word predictions for the empty-prefix bar.
     /// A no-op off Apple Intelligence devices and pre-iOS 26.
     private let predictionService = PredictionService()
+    /// Lowercased predicted words currently in the bar, for the view's
+    /// affordance and for classifying bar taps as prediction picks. Cleared
+    /// on every context update; set again when a delivery lands.
+    private(set) var lastPredictedWords: Set<String> = []
+
+    /// Lowercased runner-up corrections currently in the bar — they're
+    /// spelling corrections, so the view paints them correction-orange.
+    var correctionsInBar: Set<String> {
+        Set(alternativeCorrections.map { $0.lowercased() })
+    }
 
     /// Loads model resources ahead of the first query; call at launch.
     func prewarmPredictions() {
@@ -318,6 +328,7 @@ class SuggestionService {
         // every other path through the branch below leaves them empty.
         alternativeCorrections = []
         pendingShortcutPreview = false
+        lastPredictedWords = []
 
         if autocorrectEnabled {
             let typedForShortcut = prefix + suffix
@@ -405,9 +416,14 @@ class SuggestionService {
            !KeyboardSettings.predictionsDisabled,
            let before, !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let baseline = combinedTypeahead
-            predictionService.predict(context: before) { [weak self] words in
-                guard let self, !words.isEmpty,
+            predictionService.predict(context: before) { [weak self] words, latencyMS in
+                guard let self else { return }
+                if let latencyMS {
+                    self.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: words.count)
+                }
+                guard !words.isEmpty,
                       self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
+                self.lastPredictedWords = Set(words.map { $0.lowercased() })
                 let items = words.map { word in
                     (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
                 }

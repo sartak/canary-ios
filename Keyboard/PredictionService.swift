@@ -70,18 +70,21 @@ final class PredictionService {
     /// consecutive contexts answer synchronously from cache. A fresh session
     /// per query keeps the transcript from ever hitting the context ceiling
     /// and sidesteps the one-response-at-a-time session rule.
-    func predict(context: String, completion: @escaping ([String]) -> Void) {
+    /// The completion's second argument is the model latency in milliseconds,
+    /// or nil for a synchronous cache hit (which shouldn't count as a serve).
+    func predict(context: String, completion: @escaping ([String], Double?) -> Void) {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *), isAvailable else { return }
         let trimmed = String(context.suffix(Self.contextLimit))
         if trimmed == cachedContext {
-            completion(cachedWords)
+            completion(cachedWords, nil)
             return
         }
         requestToken += 1
         let token = requestToken
 
         Task { @MainActor [weak self] in
+            let started = CFAbsoluteTimeGetCurrent()
             let session = LanguageModelSession(instructions: Self.instructions)
             let prompt = "Text before the cursor:\n\(trimmed)\n\nThe three most likely next words:"
             let words: [String]
@@ -98,6 +101,7 @@ final class PredictionService {
                 return
             }
             guard let self, self.requestToken == token else { return }
+            let latencyMS = (CFAbsoluteTimeGetCurrent() - started) * 1000
 
             var seen = Set<String>()
             let cleaned = words
@@ -110,7 +114,7 @@ final class PredictionService {
                 }
             self.cachedContext = trimmed
             self.cachedWords = cleaned
-            completion(cleaned)
+            completion(cleaned, latencyMS)
         }
         #endif
     }

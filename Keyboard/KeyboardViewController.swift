@@ -904,6 +904,8 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
                     keyboardSize: context.keyboardSize, keyPitch: context.keyPitch
                 )
             }
+        } else if suggestionService.lastPredictedWords.contains(word.lowercased()) {
+            usageStore?.recordTapEvent(kind: .predictionPicked, typed: suggestionService.lastTypedWord, resolved: word)
         } else {
             usageStore?.recordTapEvent(kind: .suggestionPicked, typed: suggestionService.lastTypedWord, resolved: word)
         }

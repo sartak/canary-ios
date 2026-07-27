@@ -37,6 +37,8 @@ enum TapEventKind: String {
     /// Backspace shortly after an autocorrect applied: the silent rejection
     /// the bar-tap path never sees.
     case autocorrectReverted = "autocorrect_reverted"
+    /// A foundation-model next-word prediction tapped from the bar.
+    case predictionPicked = "prediction_picked"
 }
 
 /// Every tunable constant for word learning + personal frequency, in one place
@@ -305,6 +307,22 @@ final class UsageStore {
         } else {
             sqlite3_bind_null(statement, 7)
         }
+        _ = sqlite3_step(statement)
+    }
+
+    /// One foundation-model prediction serve: how long the model took and
+    /// how many words survived filtering. Picks log as prediction_picked tap
+    /// events; served-vs-picked is the feature's report card.
+    func recordPredictionServe(durationMS: Double, wordCount: Int) {
+        guard statsEnabled, let db = connection(), let device = deviceID(db) else { return }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "INSERT INTO prediction_events (created_at, device_id, duration_ms, words) VALUES (?, ?, ?, ?)",
+                                 -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_double(statement, 1, Date().timeIntervalSince1970)
+        sqlite3_bind_int64(statement, 2, device)
+        sqlite3_bind_double(statement, 3, durationMS)
+        sqlite3_bind_int64(statement, 4, Int64(wordCount))
         _ = sqlite3_step(statement)
     }
 
@@ -797,7 +815,7 @@ final class UsageStore {
         // tables instead of carrying migrations into v1 — they hold only
         // opt-in data. Everything else was always additive CREATEs.
         if metaVersion(opened) != "1" {
-            for table in ["key_events", "word_events", "swipe_events"] {
+            for table in ["key_events", "word_events", "swipe_events", "prediction_events"] {
                 exec(opened, "DROP TABLE IF EXISTS \(table);")
             }
         }
@@ -806,6 +824,7 @@ final class UsageStore {
         exec(opened, "DELETE FROM key_events WHERE created_at < \(cutoff);")
         exec(opened, "DELETE FROM word_events WHERE created_at < \(cutoff);")
         exec(opened, "DELETE FROM swipe_events WHERE created_at < \(cutoff);")
+        exec(opened, "DELETE FROM prediction_events WHERE created_at < \(cutoff);")
         return opened
     }
 
@@ -906,6 +925,14 @@ final class UsageStore {
             margin REAL
         );
         CREATE INDEX IF NOT EXISTS idx_swipe_events_time ON swipe_events(created_at);
+        CREATE TABLE IF NOT EXISTS prediction_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL NOT NULL,
+            device_id INTEGER NOT NULL REFERENCES devices(id),
+            duration_ms REAL NOT NULL,
+            words INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_prediction_events_time ON prediction_events(created_at);
         CREATE TABLE IF NOT EXISTS meta (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
