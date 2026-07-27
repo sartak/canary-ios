@@ -241,22 +241,56 @@ final class DictionaryStore {
 
     /// Serialized CKSyncEngine state, persisted beside the data it describes.
     func syncStateData() -> Data? {
+        syncValue(forKey: "engine_state")
+    }
+
+    func setSyncStateData(_ data: Data) {
+        setSyncValue(data, forKey: "engine_state")
+    }
+
+    /// Archived CKRecord system fields (the server change tag) per record,
+    /// keyed `sf:<recordName>` in sync_state. Outgoing saves must build on
+    /// these — a fresh CKRecord is an INSERT, which the server rejects with
+    /// serverRecordChanged once the record exists.
+    func systemFields(forRecordName name: String) -> Data? {
+        syncValue(forKey: "sf:" + name)
+    }
+
+    func setSystemFields(_ data: Data, forRecordName name: String) {
+        setSyncValue(data, forKey: "sf:" + name)
+    }
+
+    /// Forget one record's system fields (the record was deleted server-side;
+    /// the next save must be an insert again).
+    func deleteSystemFields(forRecordName name: String) {
+        run("DELETE FROM sync_state WHERE key = ?", texts: ["sf:" + name])
+    }
+
+    /// Forget every record's system fields (zone deleted / account changed:
+    /// all change tags are for records that no longer exist).
+    func purgeSystemFields() {
+        exec("DELETE FROM sync_state WHERE key LIKE 'sf:%'")
+    }
+
+    private func syncValue(forKey key: String) -> Data? {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT value FROM sync_state WHERE key = 'engine_state'", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT value FROM sync_state WHERE key = ?", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else { return nil }
         defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         guard sqlite3_step(statement) == SQLITE_ROW,
               let bytes = sqlite3_column_blob(statement, 0) else { return nil }
         return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
     }
 
-    func setSyncStateData(_ data: Data) {
+    private func setSyncValue(_ data: Data, forKey key: String) {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('engine_state', ?)", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else { return }
         defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, key, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         data.withUnsafeBytes { buffer in
-            _ = sqlite3_bind_blob(statement, 1, buffer.baseAddress, Int32(buffer.count),
+            _ = sqlite3_bind_blob(statement, 2, buffer.baseAddress, Int32(buffer.count),
                                   unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             _ = sqlite3_step(statement)
         }
@@ -419,6 +453,9 @@ final class DictionaryStore {
                       "tap_events", "swipe_corrections", "counters"] {
             exec("DELETE FROM \(table)")
         }
+        // Record change tags go too (the zone is about to be deleted);
+        // engine state stays — the engine reconciles the deletion itself.
+        exec("DELETE FROM sync_state WHERE key LIKE 'sf:%'")
         exec("COMMIT")
     }
 

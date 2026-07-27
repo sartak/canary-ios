@@ -18,10 +18,12 @@ import Foundation
 ///
 /// No push registration in v1: sync runs when the app becomes active and
 /// after dictionary/shortcut edits, so cross-device latency is "next time the
-/// app opens" — by design, and surfaced in the UI footer. Records are built
-/// fresh rather than carrying server metadata; true conflicts surface as
-/// serverRecordChanged, are merged into the server record, and re-queued —
-/// self-correcting at the cost of an extra round trip.
+/// app opens" — by design, and surfaced in the UI footer. Outgoing records
+/// are built on each record's archived system fields (stored per record in
+/// sync_state) so saves are UPDATES; a fresh CKRecord is an insert, which the
+/// server permanently rejects with serverRecordChanged once the record
+/// exists. True conflicts merge into the server's record — capturing its
+/// change tag — and re-queue, converging in one extra round trip.
 ///
 /// Main-actor isolated: CKSyncEngineDelegate requires Sendable, and isolation
 /// is what makes the mutable engine reference legal — every caller (SwiftUI
@@ -126,6 +128,8 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         case .accountChange:
             // Different account (or fresh sign-in): treat as first sync — the
             // merge rules reconcile per record; nothing local is discarded.
+            // Stored change tags refer to the old account's records.
+            DictionaryStore()?.purgeSystemFields()
             markEverythingDirty()
 
         case .fetchedRecordZoneChanges(let changes):
@@ -140,14 +144,33 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         case .sentRecordZoneChanges(let sent):
             guard let store = DictionaryStore() else { break }
             for record in sent.savedRecords {
+                // The saved record carries the fresh change tag; the next
+                // save of this record must build on it.
+                if let data = Self.archiveSystemFields(of: record) {
+                    store.setSystemFields(data, forRecordName: record.recordID.recordName)
+                }
                 markClean(recordName: record.recordID.recordName, store: store)
             }
+            for recordID in sent.deletedRecordIDs {
+                store.deleteSystemFields(forRecordName: recordID.recordName)
+            }
             for failure in sent.failedRecordSaves {
-                // True conflict: merge into the server's record and re-queue.
-                if failure.error.code == .serverRecordChanged,
-                   let server = failure.error.serverRecord {
-                    mergeRemoteRecord(server, into: store, syncEngine: syncEngine)
+                switch failure.error.code {
+                case .serverRecordChanged:
+                    // True conflict: merge into the server's record (which
+                    // archives its change tag) and re-queue — the retry is
+                    // then an update against the right tag.
+                    if let server = failure.error.serverRecord {
+                        mergeRemoteRecord(server, into: store, syncEngine: syncEngine)
+                        syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(failure.record.recordID)])
+                    }
+                case .unknownItem:
+                    // Our stored tag points at a record that no longer exists
+                    // (deleted elsewhere): forget it and retry as an insert.
+                    store.deleteSystemFields(forRecordName: failure.record.recordID.recordName)
                     syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(failure.record.recordID)])
+                default:
+                    break
                 }
             }
             UserDefaults.standard.set(Date(), forKey: Self.lastSyncKey)
@@ -158,6 +181,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
             // re-push everything.
             if changes.deletions.contains(where: { $0.zoneID == Self.zoneID }) {
                 syncEngine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: Self.zoneID))])
+                DictionaryStore()?.purgeSystemFields()
                 markEverythingDirty()
             }
 
@@ -196,7 +220,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         if name.hasPrefix(Self.wordPrefix) {
             let key = String(name.dropFirst(Self.wordPrefix.count))
             guard let state = store.wordState(for: key) else { return nil }
-            let record = CKRecord(recordType: "PersonalWord", recordID: recordID)
+            let record = Self.baseRecord(recordType: "PersonalWord", recordID: recordID, store: store)
             record.encryptedValues["word"] = state.word
             record["count"] = state.count
             record["learned"] = state.learned ? 1 : 0
@@ -208,7 +232,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         if name.hasPrefix(Self.shortcutPrefix) {
             let key = String(name.dropFirst(Self.shortcutPrefix.count))
             guard let state = store.shortcutState(for: key) else { return nil }
-            let record = CKRecord(recordType: "Shortcut", recordID: recordID)
+            let record = Self.baseRecord(recordType: "Shortcut", recordID: recordID, store: store)
             record.encryptedValues["trigger"] = state.trigger
             record.encryptedValues["phrase"] = state.phrase
             record["tombstoned"] = state.tombstoned ? 1 : 0
@@ -225,6 +249,12 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
     private func mergeRemoteRecord(_ record: CKRecord, into store: DictionaryStore,
                                    syncEngine: CKSyncEngine) {
         let name = record.recordID.recordName
+
+        // Whatever else happens, this is the server's current version of the
+        // record: its change tag is what the next outgoing save must carry.
+        if let data = Self.archiveSystemFields(of: record) {
+            store.setSystemFields(data, forRecordName: name)
+        }
 
         if name.hasPrefix(Self.wordPrefix) {
             let key = String(name.dropFirst(Self.wordPrefix.count))
@@ -267,6 +297,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
     private func applyRemoteDeletion(_ recordID: CKRecord.ID, store: DictionaryStore,
                                      syncEngine: CKSyncEngine) {
         let name = recordID.recordName
+        store.deleteSystemFields(forRecordName: name)
         if name.hasPrefix(Self.wordPrefix) {
             let key = String(name.dropFirst(Self.wordPrefix.count))
             guard let local = store.wordState(for: key) else { return }
@@ -282,6 +313,27 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
             guard let local = store.shortcutState(for: key), !local.tombstoned else { return }
             syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(recordID)])
         }
+    }
+
+    /// Starts an outgoing record from its archived system fields when we have
+    /// them (making the save an update against the server's change tag), or a
+    /// fresh record (a first-time insert) when we don't.
+    private static func baseRecord(recordType: CKRecord.RecordType, recordID: CKRecord.ID,
+                                   store: DictionaryStore) -> CKRecord {
+        if let data = store.systemFields(forRecordName: recordID.recordName),
+           let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data),
+           let record = CKRecord(coder: unarchiver),
+           record.recordID == recordID {
+            return record
+        }
+        return CKRecord(recordType: recordType, recordID: recordID)
+    }
+
+    private static func archiveSystemFields(of record: CKRecord) -> Data? {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+        record.encodeSystemFields(with: archiver)
+        archiver.finishEncoding()
+        return archiver.encodedData
     }
 
     private func markClean(recordName: String, store: DictionaryStore) {
