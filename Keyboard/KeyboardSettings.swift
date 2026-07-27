@@ -56,12 +56,20 @@ enum KeyboardSettings {
         set { setStamped(newValue, forKey: "debugVisualizationEnabled") }
     }
 
-    /// Whether foundation-model next-word predictions are off. Predictions
-    /// are on-device inference only; the toggle exists for taste and for
-    /// keeping the bar deterministic, not privacy.
-    static var predictionsDisabled: Bool {
-        get { store.bool(forKey: "predictionsDisabled") }
-        set { setStamped(newValue, forKey: "predictionsDisabled") }
+    /// How many foundation-model suggestions the empty-prefix bar shows;
+    /// 0 disables predictions entirely. App-configured (no keyboard-layer
+    /// key); the keyboard only reads it. Clamped 0...5; the model is always
+    /// asked for five and the bar takes a prefix, so the cache and this
+    /// setting stay independent.
+    static var predictionWordCount: Int {
+        get {
+            guard store.object(forKey: "predictionWordCount") != nil else { return 3 }
+            return min(max(store.integer(forKey: "predictionWordCount"), 0), 5)
+        }
+        set {
+            store.set(min(max(newValue, 0), 5), forKey: "predictionWordCount")
+            store.set(Date().timeIntervalSince1970, forKey: changeStampKey(for: "predictionWordCount"))
+        }
     }
 
     /// Whether the behavioral stats streams (keystrokes, word events, tap

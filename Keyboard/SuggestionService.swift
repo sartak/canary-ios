@@ -91,7 +91,7 @@ class SuggestionService {
 
     /// Loads model resources ahead of the first query; call at launch.
     func prewarmPredictions() {
-        guard !KeyboardSettings.predictionsDisabled else { return }
+        guard KeyboardSettings.predictionWordCount > 0 else { return }
         predictionService.prewarm()
     }
 
@@ -411,8 +411,9 @@ class SuggestionService {
         // document) the bar behaves as it always has. Gated on the host's
         // natural-language signal (terminals get no predictions); staleness
         // is re-checked on delivery.
+        let predictionCount = KeyboardSettings.predictionWordCount
         let willPredict = prefix.isEmpty && suffix.isEmpty && learningEnabled
-            && !KeyboardSettings.predictionsDisabled
+            && predictionCount > 0
             && predictionService.isAvailable
             && before?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
@@ -423,7 +424,10 @@ class SuggestionService {
             predictionService.onServe = { [weak self] latencyMS, wordCount in
                 self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
             }
-            predictionService.predict(context: before) { [weak self] words in
+            predictionService.predict(context: before) { [weak self] allWords in
+                // The model always yields five; the bar takes the configured
+                // prefix so the cache never depends on the setting.
+                let words = Array(allWords.prefix(predictionCount))
                 guard let self, !words.isEmpty,
                       self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
                 self.lastPredictedWords = Set(words.map { $0.lowercased() })

@@ -14,7 +14,7 @@ import FoundationModels
 @available(iOS 26.0, *)
 @Generable
 private struct NextWords {
-    @Guide(description: "The three words most likely to be typed next, most likely first", .count(3))
+    @Guide(description: "The five words most likely to be typed next, most likely first", .count(5))
     var words: [String]
 }
 #endif
@@ -37,9 +37,9 @@ private struct NextWords {
 final class PredictionService {
     private static let instructions = """
         You predict the next word a person will type on a phone keyboard.
-        Given the text before the cursor, respond with the three words most
-        likely to come next. Use plain, common words that fit the context.
-        Single words only: no punctuation, no explanations.
+        Given the text before the cursor, respond with the five words most
+        likely to come next, most likely first. Use plain, common words that
+        fit the context. Single words only: no punctuation, no explanations.
         """
 
     /// Longest context suffix sent to the model; keeps prompts small and
@@ -145,7 +145,7 @@ final class PredictionService {
         inflightTask = Task { @MainActor [weak self] in
             let started = CFAbsoluteTimeGetCurrent()
             let session = LanguageModelSession(instructions: Self.instructions)
-            let prompt = "Text before the cursor:\n\(context)\n\nThe three most likely next words:"
+            let prompt = "Text before the cursor:\n\(context)\n\nThe five most likely next words:"
             let words: [String]
             do {
                 let response = try await session.respond(

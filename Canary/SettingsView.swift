@@ -16,7 +16,7 @@ struct SettingsView: View {
     @State private var swipeOnly = KeyboardSettings.swipeOnlyMode
     @State private var autocorrect = !KeyboardSettings.autocorrectUserDisabled
     @State private var debugVisualization = KeyboardSettings.debugVisualizationEnabled
-    @State private var predictions = !KeyboardSettings.predictionsDisabled
+    @State private var predictionCount = KeyboardSettings.predictionWordCount
     @State private var collectStats = KeyboardSettings.statsCollectionEnabled
     @State private var confirmingReset = false
     @State private var resetDone = false
@@ -45,16 +45,24 @@ struct SettingsView: View {
                         KeyboardSettings.debugVisualizationEnabled = value
                         SettingsSync.sync()
                     }
-                Toggle("AI Predictions", isOn: $predictions)
-                    .onChange(of: predictions) { _, value in
-                        guard value != !KeyboardSettings.predictionsDisabled else { return }
-                        KeyboardSettings.predictionsDisabled = !value
-                        SettingsSync.sync()
+                Stepper(value: $predictionCount, in: 0...5) {
+                    HStack {
+                        Text("AI Suggestions")
+                        Spacer()
+                        Text(predictionCount == 0 ? "Off" : "\(predictionCount)")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                     }
+                }
+                .onChange(of: predictionCount) { _, value in
+                    guard value != KeyboardSettings.predictionWordCount else { return }
+                    KeyboardSettings.predictionWordCount = value
+                    SettingsSync.sync()
+                }
             } header: {
                 Text("Keyboard")
             } footer: {
-                Text("The first three toggles mirror the keyboard's number-layer keys; the keyboard adopts changes the next time it appears. AI Predictions fills the empty suggestion bar with next words from Apple's on-device model (Apple Intelligence devices only; nothing leaves the phone).")
+                Text("The first three toggles mirror the keyboard's number-layer keys; the keyboard adopts changes the next time it appears. AI Suggestions is how many next words from Apple's on-device model fill the empty suggestion bar (0 turns them off; Apple Intelligence devices only; nothing leaves the phone).")
             }
 
             Section {
@@ -107,7 +115,7 @@ struct SettingsView: View {
         autocorrect = !KeyboardSettings.autocorrectUserDisabled
         debugVisualization = KeyboardSettings.debugVisualizationEnabled
         collectStats = KeyboardSettings.statsCollectionEnabled
-        predictions = !KeyboardSettings.predictionsDisabled
+        predictionCount = KeyboardSettings.predictionWordCount
     }
 
     private func reset() {

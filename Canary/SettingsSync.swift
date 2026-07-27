@@ -18,7 +18,7 @@ import Foundation
 /// the settings themselves have on one device. Equal stamps (including the
 /// never-written 0/0 case) are a no-op.
 enum SettingsSync {
-    private static let keys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled", "predictionsDisabled"]
+    private static let keys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled", "predictionWordCount"]
     private static var observing = false
 
     /// Reconciles both directions once, and (first call only) subscribes to
@@ -44,11 +44,13 @@ enum SettingsSync {
             let stampKey = KeyboardSettings.changeStampKey(for: key)
             let localStamp = local.double(forKey: stampKey)
             let remoteStamp = kvs.double(forKey: stampKey)
+            // Object-valued copies so bools and ints ride the same mirror;
+            // the stamp guard guarantees the winning side has a value.
             if remoteStamp > localStamp {
-                local.set(kvs.bool(forKey: key), forKey: key)
+                local.set(kvs.object(forKey: key), forKey: key)
                 local.set(remoteStamp, forKey: stampKey)
             } else if localStamp > remoteStamp {
-                kvs.set(local.bool(forKey: key), forKey: key)
+                kvs.set(local.object(forKey: key), forKey: key)
                 kvs.set(localStamp, forKey: stampKey)
             }
         }
