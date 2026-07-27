@@ -14,10 +14,6 @@ import FoundationModels
 /// (mirrors SwipeTuning's doc style). Expect these to move as real-world
 /// latency and taste data comes in.
 enum PredictionTuning {
-    /// Longest context suffix sent to the model; keeps prompts small and
-    /// latency keystroke-friendly.
-    static let contextLimit = 240
-
     /// Results delivered later than this after they were asked for are
     /// cached but not shown; they surface at the next natural refresh.
     static let deliveryWindow: TimeInterval = 0.5
@@ -117,7 +113,7 @@ final class PredictionService {
     /// Cached words for a context, if a completed serve is already on hand
     /// (lets callers skip their debounce for instant delivery).
     func cachedWords(context: String) -> [String]? {
-        cache[String(context.suffix(PredictionTuning.contextLimit))]
+        cache[context]
     }
 
     /// Stops any in-flight generation. Call whenever the bar can no longer
@@ -134,19 +130,18 @@ final class PredictionService {
     /// Cache hits answer synchronously.
     func predict(context: String, completion: @escaping ([String]) -> Void) {
         guard isAvailable else { return }
-        let trimmed = String(context.suffix(PredictionTuning.contextLimit))
-        if let hit = cache[trimmed] {
+        if let hit = cache[context] {
             completion(hit)
             return
         }
-        if trimmed == inflightContext {
+        if context == inflightContext {
             // The speculative prefetch guessed right: ride its generation
             // instead of restarting it, clock reset to this real ask.
             pendingCompletion = completion
             deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
             return
         }
-        start(context: trimmed, completion: completion)
+        start(context: context, completion: completion)
     }
 
     /// Optimistic prefetch: warms the cache for `context` (typically the
@@ -155,9 +150,8 @@ final class PredictionService {
     /// cancel real work, or earlier speculation that may yet be ridden.
     func prefetch(context: String) {
         guard isAvailable else { return }
-        let trimmed = String(context.suffix(PredictionTuning.contextLimit))
-        guard cache[trimmed] == nil, inflightContext == nil else { return }
-        start(context: trimmed, completion: nil)
+        guard cache[context] == nil, inflightContext == nil else { return }
+        start(context: context, completion: nil)
     }
 
     private func start(context: String, completion: (([String]) -> Void)?) {
