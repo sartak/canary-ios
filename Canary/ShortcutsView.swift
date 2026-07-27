@@ -16,6 +16,8 @@ struct ShortcutsView: View {
     @State private var newTrigger = ""
     @State private var newPhrase = ""
     @State private var addRejected = false
+    /// Multi-select (trigger_lowers) while in edit mode, for bulk removal.
+    @State private var selection = Set<String>()
 
     var body: some View {
         Group {
@@ -28,7 +30,7 @@ struct ShortcutsView: View {
                     description: Text(footerText)
                 )
             } else {
-                List {
+                List(selection: $selection) {
                     Section(footer: Text(footerText)) {
                         ForEach(shortcuts) { shortcut in
                             HStack {
@@ -50,7 +52,8 @@ struct ShortcutsView: View {
         .navigationTitle("Shortcuts")
         .toolbar {
             if storeAvailable {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    EditButton()
                     Button {
                         newTrigger = ""
                         newPhrase = ""
@@ -58,6 +61,13 @@ struct ShortcutsView: View {
                         showingAdd = true
                     } label: {
                         Label("Add Shortcut", systemImage: "plus")
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    if !selection.isEmpty {
+                        Button("Remove \(selection.count) Selected", role: .destructive) {
+                            deleteSelected()
+                        }
                     }
                 }
             }
@@ -107,6 +117,16 @@ struct ShortcutsView: View {
         for index in offsets {
             store.removeShortcut(shortcuts[index].triggerLower)
         }
+        reload()
+        DictionarySync.shared.kick()
+    }
+
+    private func deleteSelected() {
+        guard let store = DictionaryStore() else { return }
+        for triggerLower in selection {
+            store.removeShortcut(triggerLower)
+        }
+        selection.removeAll()
         reload()
         DictionarySync.shared.kick()
     }

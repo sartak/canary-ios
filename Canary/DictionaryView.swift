@@ -16,6 +16,8 @@ struct DictionaryView: View {
     @State private var showingAdd = false
     @State private var newWord = ""
     @State private var addRejected = false
+    /// Multi-select (word_lowers) while in edit mode, for bulk removal.
+    @State private var selection = Set<String>()
 
     var body: some View {
         Group {
@@ -28,7 +30,7 @@ struct DictionaryView: View {
                     description: Text("Words you defend from autocorrect or type repeatedly appear here.")
                 )
             } else {
-                List {
+                List(selection: $selection) {
                     Section(footer: syncFooter) {
                         ForEach(entries) { entry in
                             HStack {
@@ -47,13 +49,21 @@ struct DictionaryView: View {
         .navigationTitle("Dictionary")
         .toolbar {
             if storeAvailable {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    EditButton()
                     Button {
                         newWord = ""
                         addRejected = false
                         showingAdd = true
                     } label: {
                         Label("Add Word", systemImage: "plus")
+                    }
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    if !selection.isEmpty {
+                        Button("Remove \(selection.count) Selected", role: .destructive) {
+                            deleteSelected()
+                        }
                     }
                 }
             }
@@ -106,6 +116,16 @@ struct DictionaryView: View {
         for index in offsets {
             store.unlearn(entries[index].wordLower)
         }
+        reload()
+        DictionarySync.shared.kick()
+    }
+
+    private func deleteSelected() {
+        guard let store = DictionaryStore() else { return }
+        for wordLower in selection {
+            store.unlearn(wordLower)
+        }
+        selection.removeAll()
         reload()
         DictionarySync.shared.kick()
     }
