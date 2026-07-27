@@ -126,6 +126,22 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // process was alive; start the session on its version of the truth.
         usageStore?.invalidateCaches()
 
+        // Same for the toggles: the app's Settings screen (or another device
+        // via SettingsSync) may have flipped them. Cached vars only re-read
+        // at process launch otherwise.
+        let settingsChanged = swipeOnlyModeEnabled != KeyboardSettings.swipeOnlyMode
+            || autocorrectUserDisabled != KeyboardSettings.autocorrectUserDisabled
+            || debugVisualizationEnabled != KeyboardSettings.debugVisualizationEnabled
+        if settingsChanged {
+            swipeOnlyModeEnabled = KeyboardSettings.swipeOnlyMode
+            autocorrectUserDisabled = KeyboardSettings.autocorrectUserDisabled
+            debugVisualizationEnabled = KeyboardSettings.debugVisualizationEnabled
+            if keyboardTouchView != nil {
+                rebuildKeyboard()
+                refreshSuggestions()
+            }
+        }
+
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { [weak self] (traitEnvironment: UITraitEnvironment, previousTraitCollection: UITraitCollection) in
             self?.keyboardTouchView?.setNeedsDisplay()
         }

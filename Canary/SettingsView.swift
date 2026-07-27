@@ -7,16 +7,41 @@
 
 import SwiftUI
 
-/// App-side keyboard settings. Currently just the nuclear option: reset all
-/// typing data (learned words, usage history, shortcuts, correction logs) on
-/// this device and in iCloud. Keyboard toggles are not affected — they live
-/// on the keyboard itself.
+/// App-side keyboard settings: the same three toggles the keyboard exposes
+/// on its number layer (shared through the app-group facade, so each side
+/// sees the other's flips), plus the nuclear option — reset all typing data
+/// on this device and in iCloud.
 struct SettingsView: View {
+    @State private var swipeOnly = KeyboardSettings.swipeOnlyMode
+    @State private var autocorrect = !KeyboardSettings.autocorrectUserDisabled
+    @State private var debugVisualization = KeyboardSettings.debugVisualizationEnabled
     @State private var confirmingReset = false
     @State private var resetDone = false
 
     var body: some View {
         List {
+            Section {
+                Toggle("Swipe-Only Mode", isOn: $swipeOnly)
+                    .onChange(of: swipeOnly) { _, value in
+                        KeyboardSettings.swipeOnlyMode = value
+                        SettingsSync.sync()
+                    }
+                Toggle("Autocorrect", isOn: $autocorrect)
+                    .onChange(of: autocorrect) { _, value in
+                        KeyboardSettings.autocorrectUserDisabled = !value
+                        SettingsSync.sync()
+                    }
+                Toggle("Debug Visualization", isOn: $debugVisualization)
+                    .onChange(of: debugVisualization) { _, value in
+                        KeyboardSettings.debugVisualizationEnabled = value
+                        SettingsSync.sync()
+                    }
+            } header: {
+                Text("Keyboard")
+            } footer: {
+                Text("The same toggles as the keyboard's number-layer keys. The keyboard adopts changes the next time it appears.")
+            }
+
             Section {
                 Button("Reset Typing Data…", role: .destructive) {
                     confirmingReset = true
@@ -36,6 +61,13 @@ struct SettingsView: View {
         }
         .alert("Typing data reset", isPresented: $resetDone) {
             Button("OK", role: .cancel) {}
+        }
+        .onAppear {
+            // The keyboard (or another device via SettingsSync) may have
+            // flipped these since the view was last built.
+            swipeOnly = KeyboardSettings.swipeOnlyMode
+            autocorrect = !KeyboardSettings.autocorrectUserDisabled
+            debugVisualization = KeyboardSettings.debugVisualizationEnabled
         }
     }
 
