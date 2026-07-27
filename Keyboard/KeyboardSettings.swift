@@ -19,16 +19,26 @@ enum KeyboardSettings {
     private static let migrationFlagKey = "settingsMigratedToGroup"
     private static let migratedKeys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled"]
 
-    /// The group suite when usable, else `.standard`. Usability is probed by
-    /// container-directory writability — the same access boundary the shared
-    /// database uses — because `UserDefaults(suiteName:)` exists either way
-    /// and its in-process cache can echo writes that were never persisted.
+    /// The group suite when usable, else `.standard`. Usability must be
+    /// probed — `UserDefaults(suiteName:)` exists either way and its
+    /// in-process cache can echo writes that were never persisted — and the
+    /// probe is an actual file creation in the container, not access(2)
+    /// (isWritableFile), which can report false inside the extension sandbox
+    /// even when real writes through proper APIs succeed.
     static let store: UserDefaults = {
         guard let container = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: appGroupID),
-              FileManager.default.isWritableFile(atPath: container.path),
-              let suite = UserDefaults(suiteName: appGroupID) else {
-            print("KeyboardSettings: group suite unusable; using standard defaults")
+                forSecurityApplicationGroupIdentifier: appGroupID) else {
+            print("KeyboardSettings: no group container (entitlement missing?); using standard defaults")
+            return .standard
+        }
+        let probe = container.appendingPathComponent(".settings-write-probe")
+        guard FileManager.default.createFile(atPath: probe.path, contents: nil) else {
+            print("KeyboardSettings: group container not writable (Full Access off?); using standard defaults")
+            return .standard
+        }
+        try? FileManager.default.removeItem(at: probe)
+        guard let suite = UserDefaults(suiteName: appGroupID) else {
+            print("KeyboardSettings: group suite failed to open; using standard defaults")
             return .standard
         }
         migrateIfNeeded(into: suite)
