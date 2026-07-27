@@ -461,12 +461,10 @@ class SuggestionService {
             && predictionCount > 0
             && predictionService.isAvailable
 
-        // The frequency filler ("the / of / and…") earns the bar only at the
-        // very start of a document: empty hopper, no text before the cursor.
-        // Mid-document the empty hopper belongs to AI predictions — or to an
-        // honest empty bar when the model is off, unavailable, or the host
-        // isn't natural language.
-        let barItems = (hopperEmpty && hasContext) ? [] : combinedTypeahead
+        // The bar sits empty only while a prediction is actually running.
+        // Every other empty-hopper state — document start, model off or
+        // unavailable, non-language host — shows the frequency filler.
+        let barItems = willPredict ? [] : combinedTypeahead
         delegate?.suggestionService(self, didUpdateSuggestions: barItems,
                                     autocorrect: autocorrectSuggestion, frequencies: frequencies)
 
@@ -478,8 +476,15 @@ class SuggestionService {
                 // The model always yields five; the bar takes the configured
                 // prefix so the cache never depends on the setting.
                 let words = Array(allWords.prefix(predictionCount))
-                guard let self, !words.isEmpty,
+                guard let self,
                       self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
+                guard !words.isEmpty else {
+                    // The model answered with nothing usable: the frequency
+                    // filler beats a permanently empty bar.
+                    self.delegate?.suggestionService(self, didUpdateSuggestions: combinedTypeahead,
+                                                     autocorrect: nil, frequencies: frequencies)
+                    return
+                }
                 self.lastPredictedWords = Set(words.map { $0.lowercased() })
                 let items = words.map { word in
                     (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
