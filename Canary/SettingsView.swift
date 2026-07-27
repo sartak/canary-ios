@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var debugVisualization = KeyboardSettings.debugVisualizationEnabled
     @State private var predictionCount = KeyboardSettings.predictionWordCount
     @State private var collectStats = KeyboardSettings.statsCollectionEnabled
+    /// Live values for the AI timing dials, keyed like PredictionTuning.dials.
+    @State private var timings: [String: TimeInterval] = [:]
     @State private var confirmingReset = false
     @State private var resetDone = false
 
@@ -63,6 +65,40 @@ struct SettingsView: View {
                 Text("Keyboard")
             } footer: {
                 Text("The first three toggles mirror the keyboard's number-layer keys; the keyboard adopts changes the next time it appears. AI Suggestions is how many next words from Apple's on-device model fill the empty suggestion bar (0 turns them off; Apple Intelligence devices only; nothing leaves the phone).")
+            }
+
+            Section {
+                ForEach(PredictionTuning.dials, id: \.key) { dial in
+                    Stepper(
+                        value: Binding(
+                            get: { timings[dial.key] ?? dial.defaultValue },
+                            set: { value in
+                                timings[dial.key] = value
+                                PredictionTuning.setOverride(value, forKey: dial.key)
+                            }
+                        ),
+                        in: 0...3,
+                        step: 0.05
+                    ) {
+                        HStack {
+                            Text(dial.name)
+                            Spacer()
+                            Text("\(Int(((timings[dial.key] ?? dial.defaultValue) * 1000).rounded())) ms")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                Button("Reset to Defaults") {
+                    for dial in PredictionTuning.dials {
+                        PredictionTuning.setOverride(nil, forKey: dial.key)
+                    }
+                    refreshTimings()
+                }
+            } header: {
+                Text("AI Timing")
+            } footer: {
+                Text("Experiment dials for the prediction choreography, applied on the keyboard's next appearance. Not synced. Report the keepers so they get locked in.")
             }
 
             Section {
@@ -116,6 +152,13 @@ struct SettingsView: View {
         debugVisualization = KeyboardSettings.debugVisualizationEnabled
         collectStats = KeyboardSettings.statsCollectionEnabled
         predictionCount = KeyboardSettings.predictionWordCount
+        refreshTimings()
+    }
+
+    private func refreshTimings() {
+        for dial in PredictionTuning.dials {
+            timings[dial.key] = PredictionTuning.override(dial.key) ?? dial.defaultValue
+        }
     }
 
     private func reset() {

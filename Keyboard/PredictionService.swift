@@ -10,32 +10,6 @@ import Foundation
 import FoundationModels
 #endif
 
-/// Every tunable constant for foundation-model predictions, in one place
-/// (mirrors SwipeTuning's doc style). Expect these to move as real-world
-/// latency and taste data comes in.
-enum PredictionTuning {
-    /// Results delivered later than this after they were asked for are
-    /// cached but not shown; they surface at the next natural refresh.
-    static let deliveryWindow: TimeInterval = 0.5
-
-    /// Recent context → words cache slots. More than one so speculative
-    /// prefetches can't evict the context currently on screen.
-    static let cacheCapacity = 8
-
-    /// After a swipe commits, how long until inference starts for the
-    /// correction-to-prediction handoff (the model's head start).
-    static let swipeInferenceDelay: TimeInterval = 0.5
-
-    /// After a tap-typed word boundary, how long the hopper must stay empty
-    /// before inference starts. Continuous typing cancels the wait and burns
-    /// nothing; cache hits bypass it entirely.
-    static let tapInferenceDelay: TimeInterval = 0.35
-
-    /// After a swipe commits, how long the correction candidates own the
-    /// bar before predictions replace them.
-    static let swipeHandoffDelay: TimeInterval = 1.0
-}
-
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 @Generable

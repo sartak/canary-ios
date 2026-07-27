@@ -104,3 +104,54 @@ enum KeyboardSettings {
         return fresh
     }
 }
+
+/// Every tunable for foundation-model predictions (mirrors SwipeTuning's doc
+/// style). The timings read live overrides from the app's Settings tuning
+/// dials — deliberately unsynced experiment knobs, not preferences — and fall
+/// back to the baked defaults. Report the keepers and they get locked in.
+enum PredictionTuning {
+    /// Results delivered later than this after they were asked for are
+    /// cached but not shown; they surface at the next natural refresh.
+    static var deliveryWindow: TimeInterval { tuned("deliveryWindow", 0.5) }
+
+    /// After a swipe commits, how long until inference starts for the
+    /// correction-to-prediction handoff (the model's head start).
+    static var swipeInferenceDelay: TimeInterval { tuned("swipeInferenceDelay", 0.5) }
+
+    /// After a swipe commits, how long the correction candidates own the
+    /// bar before predictions replace them.
+    static var swipeHandoffDelay: TimeInterval { tuned("swipeHandoffDelay", 1.0) }
+
+    /// After a tap-typed word boundary, how long the hopper must stay empty
+    /// before inference starts. Continuous typing cancels the wait and burns
+    /// nothing; cache hits bypass it entirely.
+    static var tapInferenceDelay: TimeInterval { tuned("tapInferenceDelay", 0.35) }
+
+    /// Recent context → words cache slots. More than one so speculative
+    /// prefetches can't evict the context currently on screen.
+    static let cacheCapacity = 8
+
+    /// The dial names the app's tuning UI iterates, with their defaults.
+    static let dials: [(key: String, name: String, defaultValue: TimeInterval)] = [
+        ("tapInferenceDelay", "Tap inference delay", 0.35),
+        ("swipeInferenceDelay", "Swipe inference delay", 0.5),
+        ("swipeHandoffDelay", "Swipe handoff delay", 1.0),
+        ("deliveryWindow", "Delivery window", 0.5),
+    ]
+
+    static func override(_ key: String) -> TimeInterval? {
+        KeyboardSettings.store.object(forKey: "tuning." + key) as? TimeInterval
+    }
+
+    static func setOverride(_ value: TimeInterval?, forKey key: String) {
+        if let value {
+            KeyboardSettings.store.set(value, forKey: "tuning." + key)
+        } else {
+            KeyboardSettings.store.removeObject(forKey: "tuning." + key)
+        }
+    }
+
+    private static func tuned(_ key: String, _ defaultValue: TimeInterval) -> TimeInterval {
+        override(key) ?? defaultValue
+    }
+}
