@@ -86,9 +86,13 @@ final class PredictionService {
     func prewarm() {
         #if canImport(FoundationModels)
         if #available(iOS 26.0, *) {
-            guard SystemLanguageModel.default.availability == .available else { return }
+            let availability = SystemLanguageModel.default.availability
+            print("PredictionService: availability = \(availability)")
+            guard availability == .available else { return }
             LanguageModelSession(instructions: Self.instructions).prewarm()
         }
+        #else
+        print("PredictionService: FoundationModels not present in this SDK")
         #endif
     }
 
@@ -157,6 +161,7 @@ final class PredictionService {
             } catch {
                 // Guardrail refusal, context trouble, cancellation: nothing
                 // to surface; the bar stays as it is.
+                print("PredictionService: generation failed: \(error)")
                 return
             }
             guard let self, self.requestToken == token else { return }
@@ -171,7 +176,9 @@ final class PredictionService {
                     return true
                 }
 
-            self.onServe?((CFAbsoluteTimeGetCurrent() - started) * 1000, cleaned.count)
+            let elapsedMS = (CFAbsoluteTimeGetCurrent() - started) * 1000
+            print("PredictionService: \(cleaned.count) words in \(String(format: "%.0f", elapsedMS))ms: \(cleaned.joined(separator: ", "))")
+            self.onServe?(elapsedMS, cleaned.count)
             self.store(cleaned, for: context)
 
             let completion = self.pendingCompletion
