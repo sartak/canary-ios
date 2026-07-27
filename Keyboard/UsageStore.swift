@@ -560,6 +560,12 @@ final class UsageStore {
         shortcuts()[triggerLower] ?? externalShortcuts[triggerLower]
     }
 
+    /// Every known trigger token (custom + this session's iOS pairs), for the
+    /// swipe candidate pool: swiping a trigger expands like typing it.
+    func shortcutTriggerWords() -> [String] {
+        Array(Set(shortcuts().keys).union(externalShortcuts.keys))
+    }
+
     /// Trigger hygiene: 2–24 characters, letters/digits/interior apostrophes,
     /// no whitespace, at least one letter.
     static func isValidShortcutTrigger(_ trigger: String) -> Bool {

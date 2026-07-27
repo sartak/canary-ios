@@ -279,7 +279,17 @@ class SuggestionService {
         pendingShortcutPreview = false
 
         if autocorrectEnabled {
-            if let exactMatch = exactMatch {
+            let typedForShortcut = prefix + suffix
+            if !typedForShortcut.isEmpty,
+               let phrase = usageStore?.shortcutPhrase(for: typedForShortcut.lowercased()) {
+                // A trigger's phrase preview outranks every other proposal —
+                // exact match, learned casing, correction — because the
+                // expansion is what the boundary keypress will actually do.
+                // (A trigger that also became a learned word would otherwise
+                // show a casing proposal here instead of its phrase.)
+                pendingShortcutPreview = true
+                autocorrectSuggestion = phrase.count > 24 ? String(phrase.prefix(24)) + "…" : phrase
+            } else if let exactMatch = exactMatch {
                 // We have an exact match, do smart capitalization
                 let smartCapitalizedWord = applySmartCapitalization(word: exactMatch, userPrefix: prefix, userSuffix: suffix, shiftState: shiftState)
                 autocorrectSuggestion = smartCapitalizedWord != (prefix + suffix) ? smartCapitalizedWord : nil
@@ -353,15 +363,6 @@ class SuggestionService {
         // Mid-word (non-empty suffix) the WHOLE word around the cursor is
         // corrected; the proposal is bar-tap only (see updateContext).
         let typedWord = prefix + suffix
-
-        // A known shortcut trigger must never be corrected away while it's
-        // being typed ("omw" would become "own" before its boundary lands).
-        // The slot previews the expansion instead; tapping it opts out.
-        if let phrase = usageStore?.shortcutPhrase(for: typedWord.lowercased()) {
-            pendingShortcutPreview = true
-            alternativeCorrections = []
-            return phrase.count > 24 ? String(phrase.prefix(24)) + "…" : phrase
-        }
 
         // Handle possessive 's suffix: autocorrect just the word part, then append 's
         let (wordToCorrect, possessiveSuffix) = if (typedWord.hasSuffix("'s") || typedWord.hasSuffix("'S")) && typedWord.count > 2 {
@@ -778,6 +779,11 @@ class SuggestionService {
         let matchesTyped = committed.lowercased().hasPrefix(previousPrefix.lowercased())
         let matchesCorrection = appliedCorrection.map { $0 == committed } ?? false
         guard matchesTyped || matchesCorrection else { return }
+
+        // A shortcut trigger is not vocabulary: the expansion is about to
+        // replace it, and counting it would eventually learn "omw" as a word
+        // (with whatever casing) that then competes with its own phrase.
+        guard usageStore?.shortcutPhrase(for: committed.lowercased()) == nil else { return }
 
         // Sentence-initial capitalization is auto-shift noise, not evidence of
         // how the user cases the word — count the use but keep the stored casing.

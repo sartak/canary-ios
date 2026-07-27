@@ -323,7 +323,10 @@ final class SwipeDecoder {
                                 endLetters: Set<Character>?,
                                 existing: [SwipeLexiconEntry]) -> [SwipeLexiconEntry] {
         guard let store = usageStore else { return [] }
-        let words = store.learnedWords()
+        // Shortcut triggers ride along: swiping o-m-w must be able to decode
+        // to "omw" for the expansion hook to fire, and triggers are not in
+        // the lexicon. Same synthetic frequency as learned words.
+        let words = store.learnedWords() + store.shortcutTriggerWords()
         guard !words.isEmpty else { return [] }
 
         var seen = Set(existing.map { $0.word.lowercased() })

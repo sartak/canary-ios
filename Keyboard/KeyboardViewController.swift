@@ -859,6 +859,24 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         executeActions(result.actions)
         autoShift()
 
+        // A swiped trigger expands exactly like a typed one — the swipe's
+        // auto-inserted trailing space is the boundary. Skip usage counting
+        // and the correction context: a trigger is not vocabulary, and the
+        // replacement actions' delete counts no longer match the text once
+        // the phrase is in. Backspace undoes the expansion back to the
+        // literal trigger, mirroring the typed path.
+        if !autocorrectWordDisabled,
+           let phrase = usageStore?.shortcutPhrase(for: result.word.lowercased()) {
+            usageStore?.recordSwipeCommit()
+            var actions: [InputAction] = Array(repeating: .deleteBackward, count: result.word.count + 1)
+            actions.append(.insert(phrase + " "))
+            actions.append(.maybePunctuating(true))
+            executeActions(actions)
+            usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: result.word, resolved: phrase)
+            refreshSuggestions()
+            return
+        }
+
         // Milestone 9: count the commit and stash context so a following
         // suggestion-bar tap can be logged as a swipe correction.
         usageStore?.recordSwipeCommit()
