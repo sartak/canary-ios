@@ -276,9 +276,11 @@ class SuggestionService {
     }
 
     /// Memory-pressure hook: forwards to the swipe decoder's template cache
-    /// and asks SQLite to shed page cache.
+    /// and the prediction service (results cache + retained session), and
+    /// asks SQLite to shed page cache.
     func releaseMemory() {
         swipeDecoder.releaseMemory()
+        predictionService.releaseMemory()
         sqlite3_db_release_memory(db)
     }
 

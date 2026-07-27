@@ -157,6 +157,18 @@ final class PredictionService {
         "\(count)#\(context)"
     }
 
+    /// Memory-pressure hook: drops the results cache and the retained
+    /// session (with its up-to-six-turn transcript of recent contexts — the
+    /// largest discretionary allocation here). Everything rebuilds lazily;
+    /// the next request just pays one instruction prefill again.
+    func releaseMemory() {
+        cancel()
+        cache.removeAll()
+        cacheOrder.removeAll()
+        sessionBox = nil
+        sessionTurns = 0
+    }
+
     /// Stops any in-flight generation. Call whenever the bar can no longer
     /// show predictions (typing resumed, field changed).
     func cancel() {
