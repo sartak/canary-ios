@@ -237,6 +237,10 @@ final class PredictionService {
             }
             guard let self, self.requestToken == token else { return }
             self.sessionTurns += 1
+            // Raw, pre-filter emission — the ground truth for decoding
+            // pathologies (fragments, early string-closes, junk elements)
+            // that the cleaned log line below would mask.
+            print("PredictionService: raw response: \(words)")
 
             var seen = Set<String>()
             let cleaned = words
