@@ -129,8 +129,6 @@
 - [x] Create UI for managing custom shortcuts in main app
 - [x] Use shared container to pass settings between app and keyboard extension
 
-### Context-Aware Features
-- [ ] Add context-aware key alternates (e.g., domain suffixes for email fields)
 
 ## Milestone 11: Cross-Device Sync
 **Goal**: Sync settings and learned vocabulary across devices
