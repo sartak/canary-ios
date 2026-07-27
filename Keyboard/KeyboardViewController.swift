@@ -84,6 +84,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // UsageStore so it stays UIKit-free for the test target).
         usageStore?.localDeviceName = UIDevice.current.name
 
+        // Foundation-model predictions: load shared model resources while the
+        // keyboard is still animating in, ahead of the first empty-hopper query.
+        suggestionService.prewarmPredictions()
+
         // iOS-provided personal vocabulary (contact names, single-word text
         // replacements) joins the personal dictionary for this session. iOS
         // owns the source, so it is re-fetched each launch, never persisted.

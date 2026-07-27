@@ -56,6 +56,14 @@ enum KeyboardSettings {
         set { setStamped(newValue, forKey: "debugVisualizationEnabled") }
     }
 
+    /// Whether foundation-model next-word predictions are off. Predictions
+    /// are on-device inference only; the toggle exists for taste and for
+    /// keeping the bar deterministic, not privacy.
+    static var predictionsDisabled: Bool {
+        get { store.bool(forKey: "predictionsDisabled") }
+        set { setStamped(newValue, forKey: "predictionsDisabled") }
+    }
+
     /// Whether the behavioral stats streams (keystrokes, word events, tap
     /// events, swipe corrections) are collected. OPT-IN: nothing is recorded
     /// until the app's Settings enables it. Deliberately PER-DEVICE — never

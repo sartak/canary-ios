@@ -18,7 +18,7 @@ import Foundation
 /// the settings themselves have on one device. Equal stamps (including the
 /// never-written 0/0 case) are a no-op.
 enum SettingsSync {
-    private static let keys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled"]
+    private static let keys = ["swipeOnlyMode", "autocorrectUserDisabled", "debugVisualizationEnabled", "predictionsDisabled"]
     private static var observing = false
 
     /// Reconciles both directions once, and (first call only) subscribes to

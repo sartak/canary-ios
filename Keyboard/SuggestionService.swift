@@ -75,6 +75,16 @@ class SuggestionService {
     /// an immediate neighbor; 1.5 admits the diagonal ring.
     private static let adjacentKeyThreshold: CGFloat = 1.5
 
+    /// Foundation-model next-word predictions for the empty-prefix bar.
+    /// A no-op off Apple Intelligence devices and pre-iOS 26.
+    private let predictionService = PredictionService()
+
+    /// Loads model resources ahead of the first query; call at launch.
+    func prewarmPredictions() {
+        guard !KeyboardSettings.predictionsDisabled else { return }
+        predictionService.prewarm()
+    }
+
     func updateKeyGeometry(keyCenters: KeyCenters, keyPitch: CGFloat) {
         self.keyCenters = keyCenters
         self.keyPitch = keyPitch
@@ -384,6 +394,29 @@ class SuggestionService {
         let combinedTypeahead = alternativeItems + filteredTypeahead.filter { !alternativeWords.contains($0.0) }
 
         delegate?.suggestionService(self, didUpdateSuggestions: combinedTypeahead, autocorrect: autocorrectSuggestion, frequencies: frequencies)
+
+        // Empty hopper: the frequency-ranked words above are placeholders, so
+        // ask the on-device foundation model for context-aware next words and
+        // deliver them as a second bar update when they arrive. Gated on the
+        // host's natural-language signal (terminals get no predictions) and
+        // the user's predictions toggle; staleness is re-checked on delivery
+        // so a slow response can't repaint a bar that has moved on.
+        if prefix.isEmpty, suffix.isEmpty, learningEnabled,
+           !KeyboardSettings.predictionsDisabled,
+           let before, !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let baseline = combinedTypeahead
+            predictionService.predict(context: before) { [weak self] words in
+                guard let self, !words.isEmpty,
+                      self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
+                let items = words.map { word in
+                    (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
+                }
+                let predicted = Set(items.map { $0.0.lowercased() })
+                let merged = items + baseline.filter { !predicted.contains($0.0.lowercased()) }
+                self.delegate?.suggestionService(self, didUpdateSuggestions: merged,
+                                                 autocorrect: nil, frequencies: frequencies)
+            }
+        }
     }
 
     private func updateAutocorrect(prefix: String, suffix: String, autocorrectEnabled: Bool = true, shiftState: ShiftState) -> String? {
