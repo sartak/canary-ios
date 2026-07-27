@@ -75,6 +75,22 @@ final class PredictionService {
     private var cache: [String: [String]] = [:]
     private var cacheOrder: [String] = []
 
+    /// The ONE retained session — the KV cache. Sessions keep their
+    /// transcript prefix hot across turns, so holding one and reusing it
+    /// avoids re-prefilling the instructions (and lets prior turns act as
+    /// accumulated few-shot examples). Stored as Any because stored
+    /// properties can't be availability-gated; each use casts under
+    /// #available. Rebuilt only when the count config changes (rare), a
+    /// cancelled response hasn't unwound yet, the transcript nears the
+    /// context window, or a generation failed.
+    private var sessionBox: Any?
+    private var sessionCount = 0
+    private var sessionTurns = 0
+
+    /// Turns before the session recycles: each turn's prompt carries full
+    /// document context, so transcripts fatten fast against the 4k window.
+    private static let maxSessionTurns = 6
+
     /// Monotonic staleness token: results for anything but the newest
     /// generation are dropped.
     private var requestToken = 0
@@ -107,11 +123,31 @@ final class PredictionService {
             let availability = SystemLanguageModel.default.availability
             print("PredictionService: availability = \(availability)")
             guard availability == .available else { return }
-            let count = max(1, KeyboardSettings.predictionWordCount)
-            LanguageModelSession(instructions: Self.makeInstructions(count: count)).prewarm()
+            session(count: max(1, KeyboardSettings.predictionWordCount)).prewarm()
         }
         #else
         print("PredictionService: FoundationModels not present in this SDK")
+        #endif
+    }
+
+    /// The retained session when it's still fit for purpose, else a fresh
+    /// replacement (only ever one held).
+    @available(iOS 26.0, *)
+    private func session(count: Int) -> LanguageModelSession {
+        #if canImport(FoundationModels)
+        if let existing = sessionBox as? LanguageModelSession,
+           sessionCount == count,
+           sessionTurns < Self.maxSessionTurns,
+           !existing.isResponding {
+            return existing
+        }
+        let fresh = LanguageModelSession(instructions: Self.makeInstructions(count: count))
+        sessionBox = fresh
+        sessionCount = count
+        sessionTurns = 0
+        return fresh
+        #else
+        fatalError("unreachable")
         #endif
     }
 
@@ -176,9 +212,9 @@ final class PredictionService {
         pendingCompletion = completion
         deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
 
+        let session = session(count: count)
         inflightTask = Task { @MainActor [weak self] in
             let started = CFAbsoluteTimeGetCurrent()
-            let session = LanguageModelSession(instructions: Self.makeInstructions(count: count))
             // The prompt is the user's text and nothing else — meta framing
             // ("the text before the cursor is...") makes the small model
             // extract words from the text instead of continuing it.
@@ -192,13 +228,20 @@ final class PredictionService {
                     options: GenerationOptions(sampling: .greedy)
                 )
                 words = response.content.alternatives
+            } catch is CancellationError {
+                // Superseded: the session survives (its transcript didn't
+                // advance); the isResponding guard covers the unwind race.
+                return
             } catch {
-                // Guardrail refusal, context trouble, cancellation: nothing
-                // to surface; the bar stays as it is.
+                // Guardrail refusal, context-window overflow, anything else:
+                // nothing to surface, and the session is suspect — drop it so
+                // the next request starts clean.
                 print("PredictionService: generation failed: \(error)")
+                self?.sessionBox = nil
                 return
             }
             guard let self, self.requestToken == token else { return }
+            self.sessionTurns += 1
 
             var seen = Set<String>()
             let cleaned = words
