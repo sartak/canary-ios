@@ -454,13 +454,20 @@ class SuggestionService {
         // natural-language signal (terminals get no predictions); staleness
         // is re-checked on delivery.
         let predictionCount = KeyboardSettings.predictionWordCount
-        let willPredict = prefix.isEmpty && suffix.isEmpty && learningEnabled
+        let hopperEmpty = prefix.isEmpty && suffix.isEmpty
+        let hasContext = before?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let willPredict = hopperEmpty && hasContext && learningEnabled
             && !suppressPredictions
             && predictionCount > 0
             && predictionService.isAvailable
-            && before?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
-        delegate?.suggestionService(self, didUpdateSuggestions: willPredict ? [] : combinedTypeahead,
+        // The frequency filler ("the / of / and…") earns the bar only at the
+        // very start of a document: empty hopper, no text before the cursor.
+        // Mid-document the empty hopper belongs to AI predictions — or to an
+        // honest empty bar when the model is off, unavailable, or the host
+        // isn't natural language.
+        let barItems = (hopperEmpty && hasContext) ? [] : combinedTypeahead
+        delegate?.suggestionService(self, didUpdateSuggestions: barItems,
                                     autocorrect: autocorrectSuggestion, frequencies: frequencies)
 
         if willPredict, let before {
