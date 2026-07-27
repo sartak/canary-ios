@@ -217,10 +217,14 @@ final class PredictionService {
             print("PredictionService: predicting after ...\(String(context.suffix(120)))")
             let words: [String]
             do {
+                // Default sampling, not greedy: greedy over an unconfident
+                // distribution collapses to top-frequency words and can
+                // early-close strings mid-word in constrained decoding
+                // ("I will " -> "wi"). Determinism was never load-bearing —
+                // the cache already pins repeat contexts.
                 let response = try await session.respond(
                     to: prompt,
-                    generating: NextWordAlternatives.self,
-                    options: GenerationOptions(sampling: .greedy)
+                    generating: NextWordAlternatives.self
                 )
                 words = response.content.alternatives
             } catch is CancellationError {
