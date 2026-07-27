@@ -24,9 +24,16 @@ private struct NextWords {
 /// devices). Strictly on-device: `SystemLanguageModel` inference runs in a
 /// system process and never touches the network — Private Cloud Compute is
 /// deliberately not used from a keyboard. Everything is best-effort and
-/// asynchronous: when the model is unavailable (older OS, ineligible device,
-/// Apple Intelligence off, or the framework declining to run in a keyboard
-/// extension) the bar simply keeps its frequency-ranked words.
+/// asynchronous: when the model is unavailable the bar simply never asks.
+///
+/// Latency posture: results deliver only within a short freshness window
+/// (never repaint under a descending finger); superseded generations are
+/// cancelled (inference burns battery); and after each delivery the caller
+/// optimistically prefetches the world where the user taps the top word, so
+/// chained picks are cache hits. A real request arriving for a context whose
+/// speculative generation is already in flight RIDES it — with the freshness
+/// clock restarted at the moment of the real request, since lateness is
+/// measured against the user's ask, not speculation's head start.
 final class PredictionService {
     private static let instructions = """
         You predict the next word a person will type on a phone keyboard.
@@ -39,33 +46,31 @@ final class PredictionService {
     /// latency keystroke-friendly.
     private static let contextLimit = 240
 
-    /// Monotonic staleness token: results for anything but the newest
-    /// request are dropped, so a slow response can't repaint a newer bar.
-    private var requestToken = 0
-    private var cachedContext: String?
-    private var cachedWords: [String] = []
-    /// The in-flight generation, cancelled when superseded or no longer
-    /// showable — dropping a result is free, but the inference itself burns
-    /// battery. (Cancellation is cooperative; the token guard remains the
-    /// backstop if a generation ignores it.)
-    private var inflightTask: Task<Void, Never>?
-
-    /// Serves completing slower than this are cached but NOT delivered: a bar
-    /// that repaints under a descending finger is worse than no prediction.
-    /// The cache surfaces them at the next natural refresh instead.
+    /// Results delivered later than this after they were asked for are
+    /// cached but not shown; they surface at the next natural refresh.
     private static let deliveryWindow: TimeInterval = 0.5
 
-    /// Telemetry hook, fired once per completed model serve (delivered or
-    /// not) with latency in ms and surviving word count. Kept separate from
-    /// the delivery completion so the slow tail still gets measured.
-    var onServe: ((Double, Int) -> Void)?
+    /// Recent context → words results. More than one slot so speculative
+    /// prefetches can't evict the context currently on screen.
+    private static let cacheCapacity = 8
 
-    /// Stops any in-flight generation. Call whenever the bar can no longer
-    /// show predictions (typing resumed, field changed).
-    func cancel() {
-        inflightTask?.cancel()
-        inflightTask = nil
-    }
+    private var cache: [String: [String]] = [:]
+    private var cacheOrder: [String] = []
+
+    /// Monotonic staleness token: results for anything but the newest
+    /// generation are dropped.
+    private var requestToken = 0
+    /// The context the in-flight generation is answering, nil when idle.
+    private var inflightContext: String?
+    private var inflightTask: Task<Void, Never>?
+    /// Delivery for the in-flight generation (nil for pure prefetches), plus
+    /// when it was asked for — the freshness clock.
+    private var pendingCompletion: (([String]) -> Void)?
+    private var deliveryRequestedAt: CFAbsoluteTime = 0
+
+    /// Telemetry hook, fired once per completed model serve (delivered,
+    /// cached-late, or speculative) with latency in ms and word count.
+    var onServe: ((Double, Int) -> Void)?
 
     var isAvailable: Bool {
         #if canImport(FoundationModels)
@@ -87,27 +92,60 @@ final class PredictionService {
         #endif
     }
 
-    /// Predicts next words for the text before the cursor. The completion
-    /// runs on the main actor, only for the newest request; identical
-    /// consecutive contexts answer synchronously from cache. A fresh session
-    /// per query keeps the transcript from ever hitting the context ceiling
-    /// and sidesteps the one-response-at-a-time session rule.
+    /// Stops any in-flight generation. Call whenever the bar can no longer
+    /// show predictions (typing resumed, field changed).
+    func cancel() {
+        inflightTask?.cancel()
+        inflightTask = nil
+        inflightContext = nil
+        pendingCompletion = nil
+    }
+
+    /// Predicts next words for the text before the cursor; the completion
+    /// runs on the main actor, only for fresh, newest-request results.
+    /// Cache hits answer synchronously.
     func predict(context: String, completion: @escaping ([String]) -> Void) {
-        #if canImport(FoundationModels)
-        guard #available(iOS 26.0, *), isAvailable else { return }
+        guard isAvailable else { return }
         let trimmed = String(context.suffix(Self.contextLimit))
-        if trimmed == cachedContext {
-            completion(cachedWords)
+        if let hit = cache[trimmed] {
+            completion(hit)
             return
         }
+        if trimmed == inflightContext {
+            // The speculative prefetch guessed right: ride its generation
+            // instead of restarting it, clock reset to this real ask.
+            pendingCompletion = completion
+            deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
+            return
+        }
+        start(context: trimmed, completion: completion)
+    }
+
+    /// Optimistic prefetch: warms the cache for `context` (typically the
+    /// current context plus the top suggestion) without ever delivering.
+    /// Never preempts an existing generation — speculation doesn't get to
+    /// cancel real work, or earlier speculation that may yet be ridden.
+    func prefetch(context: String) {
+        guard isAvailable else { return }
+        let trimmed = String(context.suffix(Self.contextLimit))
+        guard cache[trimmed] == nil, inflightContext == nil else { return }
+        start(context: trimmed, completion: nil)
+    }
+
+    private func start(context: String, completion: (([String]) -> Void)?) {
+        #if canImport(FoundationModels)
+        guard #available(iOS 26.0, *) else { return }
         requestToken += 1
         let token = requestToken
         inflightTask?.cancel()
+        inflightContext = context
+        pendingCompletion = completion
+        deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
 
         inflightTask = Task { @MainActor [weak self] in
             let started = CFAbsoluteTimeGetCurrent()
             let session = LanguageModelSession(instructions: Self.instructions)
-            let prompt = "Text before the cursor:\n\(trimmed)\n\nThe three most likely next words:"
+            let prompt = "Text before the cursor:\n\(context)\n\nThe three most likely next words:"
             let words: [String]
             do {
                 let response = try await session.respond(
@@ -117,12 +155,11 @@ final class PredictionService {
                 )
                 words = response.content.words
             } catch {
-                // Guardrail refusal, context trouble, cancellation: the bar
-                // keeps its frequency words; nothing to surface.
+                // Guardrail refusal, context trouble, cancellation: nothing
+                // to surface; the bar stays as it is.
                 return
             }
             guard let self, self.requestToken == token else { return }
-            let elapsed = CFAbsoluteTimeGetCurrent() - started
 
             var seen = Set<String>()
             let cleaned = words
@@ -133,14 +170,32 @@ final class PredictionService {
                           seen.insert(word.lowercased()).inserted else { return false }
                     return true
                 }
-            self.onServe?(elapsed * 1000, cleaned.count)
-            self.cachedContext = trimmed
-            self.cachedWords = cleaned
+
+            self.onServe?((CFAbsoluteTimeGetCurrent() - started) * 1000, cleaned.count)
+            self.store(cleaned, for: context)
+
+            let completion = self.pendingCompletion
+            let waited = CFAbsoluteTimeGetCurrent() - self.deliveryRequestedAt
+            self.inflightContext = nil
+            self.inflightTask = nil
+            self.pendingCompletion = nil
+
             // Late results never repaint the bar mid-gaze; the cache above
             // surfaces them synchronously at the next refresh instead.
-            guard elapsed <= Self.deliveryWindow else { return }
-            completion(cleaned)
+            if let completion, waited <= Self.deliveryWindow {
+                completion(cleaned)
+            }
         }
         #endif
+    }
+
+    private func store(_ words: [String], for context: String) {
+        if cache[context] == nil {
+            cacheOrder.append(context)
+            if cacheOrder.count > Self.cacheCapacity {
+                cache.removeValue(forKey: cacheOrder.removeFirst())
+            }
+        }
+        cache[context] = words
     }
 }

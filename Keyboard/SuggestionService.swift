@@ -432,6 +432,13 @@ class SuggestionService {
                 }
                 self.delegate?.suggestionService(self, didUpdateSuggestions: items,
                                                  autocorrect: nil, frequencies: frequencies)
+                // Optimistic prefetch: warm the model for the world where
+                // the user taps the top word, so a chained pick's bar fills
+                // from cache in the same frame. Runs on cache-hit deliveries
+                // too, which is what keeps repeated picks instant.
+                if let top = words.first {
+                    self.predictionService.prefetch(context: before + top + " ")
+                }
             }
         } else {
             // Typing resumed (or the field stopped qualifying): stop burning
