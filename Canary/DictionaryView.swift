@@ -12,6 +12,7 @@ import SwiftUI
 /// and manual add.
 struct DictionaryView: View {
     @State private var entries: [DictionaryStore.Entry] = []
+    @State private var tombstones: [DictionaryStore.Tombstone] = []
     @State private var storeAvailable = false
     @State private var showingAdd = false
     @State private var newWord = ""
@@ -23,7 +24,7 @@ struct DictionaryView: View {
         Group {
             if !storeAvailable {
                 unavailableExplainer
-            } else if entries.isEmpty {
+            } else if entries.isEmpty && tombstones.isEmpty {
                 ContentUnavailableView(
                     "No learned words yet",
                     systemImage: "book",
@@ -31,7 +32,7 @@ struct DictionaryView: View {
                 )
             } else {
                 List(selection: $selection) {
-                    Section(footer: syncFooter) {
+                    Section(footer: tombstones.isEmpty ? syncFooter : nil) {
                         ForEach(entries) { entry in
                             HStack {
                                 Text(entry.word)
@@ -42,6 +43,22 @@ struct DictionaryView: View {
                             }
                         }
                         .onDelete(perform: unlearn)
+                    }
+                    if !tombstones.isEmpty {
+                        Section {
+                            ForEach(tombstones) { tombstone in
+                                Text(tombstone.wordLower)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .onDelete(perform: hardDelete)
+                        } header: {
+                            Text("Removed")
+                        } footer: {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Removed words won't be re-learned by typing (defending one from autocorrect still brings it back). Deleting here erases the block and the word's history, so it can be learned fresh.")
+                                syncFooter
+                            }
+                        }
                     }
                 }
             }
@@ -105,9 +122,11 @@ struct DictionaryView: View {
         if let store = DictionaryStore() {
             storeAvailable = true
             entries = store.entries()
+            tombstones = store.tombstones()
         } else {
             storeAvailable = false
             entries = []
+            tombstones = []
         }
     }
 
@@ -120,14 +139,36 @@ struct DictionaryView: View {
         DictionarySync.shared.kick()
     }
 
+    /// Selection can span both sections; ids can't collide (a word is either
+    /// learned or tombstoned, never both). Learned → un-learn (tombstone);
+    /// tombstoned → hard delete (erase, incl. the CloudKit record).
     private func deleteSelected() {
         guard let store = DictionaryStore() else { return }
+        let tombstoned = Set(tombstones.map(\.wordLower))
+        var hardDeleted: [String] = []
         for wordLower in selection {
-            store.unlearn(wordLower)
+            if tombstoned.contains(wordLower) {
+                store.hardDeleteWord(wordLower)
+                hardDeleted.append(wordLower)
+            } else {
+                store.unlearn(wordLower)
+            }
         }
         selection.removeAll()
         reload()
+        DictionarySync.shared.hardDeleteWords(hardDeleted)
         DictionarySync.shared.kick()
+    }
+
+    private func hardDelete(at offsets: IndexSet) {
+        guard let store = DictionaryStore() else { return }
+        var deleted: [String] = []
+        for index in offsets {
+            store.hardDeleteWord(tombstones[index].wordLower)
+            deleted.append(tombstones[index].wordLower)
+        }
+        reload()
+        DictionarySync.shared.hardDeleteWords(deleted)
     }
 
     private func add() {

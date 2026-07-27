@@ -110,6 +110,45 @@ final class DictionaryStore {
         return true
     }
 
+    struct Tombstone: Identifiable {
+        let wordLower: String
+        let unlearnedAt: Date
+        var id: String { wordLower }
+    }
+
+    /// Un-learned (tombstoned) words, newest removals first. Only the
+    /// lowercased form exists — the learned row is gone by definition.
+    func tombstones() -> [Tombstone] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT word_lower, unlearned_at FROM unlearned_words ORDER BY unlearned_at DESC", -1, &stmt, nil) == SQLITE_OK,
+              let statement = stmt else {
+            return []
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var result: [Tombstone] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let lowerPtr = sqlite3_column_text(statement, 0) else { continue }
+            result.append(Tombstone(
+                wordLower: String(cString: lowerPtr),
+                unlearnedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 1))
+            ))
+        }
+        return result
+    }
+
+    /// Erases every local trace of a word: tombstone, learned row, usage
+    /// counts. The word can then be learned again from scratch. Pair with
+    /// DictionarySync.hardDeleteWords — without the CloudKit record deletion,
+    /// the next sync would just re-download the tombstone.
+    func hardDeleteWord(_ wordLower: String) {
+        exec("BEGIN")
+        for table in ["unlearned_words", "learned_words", "word_usage"] {
+            run("DELETE FROM \(table) WHERE word_lower = ?", texts: [wordLower])
+        }
+        exec("COMMIT")
+    }
+
     // MARK: - Shortcuts
 
     struct Shortcut: Identifiable {

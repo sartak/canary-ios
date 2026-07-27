@@ -79,6 +79,20 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         }
     }
 
+    /// Queues CloudKit record deletions for hard-deleted words and sends.
+    /// This erases the records, not a propagating ban: a device still holding
+    /// the word live will re-push it (absence is not deletion), which is the
+    /// correct outcome — hard delete means "forget", the tombstone meant
+    /// "block".
+    func hardDeleteWords(_ wordLowers: [String]) {
+        guard !wordLowers.isEmpty, let store = DictionaryStore() else { return }
+        let engine = ensureEngine(store: store)
+        engine.state.add(pendingRecordZoneChanges: wordLowers.map { .deleteRecord(Self.wordRecordID($0)) })
+        Task {
+            try? await engine.sendChanges()
+        }
+    }
+
     /// When the app last completed a send, for the UI footer.
     static var lastSync: Date? {
         UserDefaults.standard.object(forKey: lastSyncKey) as? Date
