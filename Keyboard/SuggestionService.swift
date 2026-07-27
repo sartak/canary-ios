@@ -404,18 +404,22 @@ class SuggestionService {
         let alternativeWords = Set(alternativeItems.map { $0.0 })
         let combinedTypeahead = alternativeItems + filteredTypeahead.filter { !alternativeWords.contains($0.0) }
 
-        delegate?.suggestionService(self, didUpdateSuggestions: combinedTypeahead, autocorrect: autocorrectSuggestion, frequencies: frequencies)
+        // Empty hopper with the model available: the bar stays EMPTY while
+        // inference runs — the frequency filler isn't worth reading, and an
+        // empty bar that fills with purple beats a gray bar that shuffles.
+        // Everywhere else (typing, predictions off, non-AI device, empty
+        // document) the bar behaves as it always has. Gated on the host's
+        // natural-language signal (terminals get no predictions); staleness
+        // is re-checked on delivery.
+        let willPredict = prefix.isEmpty && suffix.isEmpty && learningEnabled
+            && !KeyboardSettings.predictionsDisabled
+            && predictionService.isAvailable
+            && before?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
-        // Empty hopper: the frequency-ranked words above are placeholders, so
-        // ask the on-device foundation model for context-aware next words and
-        // deliver them as a second bar update when they arrive. Gated on the
-        // host's natural-language signal (terminals get no predictions) and
-        // the user's predictions toggle; staleness is re-checked on delivery
-        // so a slow response can't repaint a bar that has moved on.
-        if prefix.isEmpty, suffix.isEmpty, learningEnabled,
-           !KeyboardSettings.predictionsDisabled,
-           let before, !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let baseline = combinedTypeahead
+        delegate?.suggestionService(self, didUpdateSuggestions: willPredict ? [] : combinedTypeahead,
+                                    autocorrect: autocorrectSuggestion, frequencies: frequencies)
+
+        if willPredict, let before {
             predictionService.onServe = { [weak self] latencyMS, wordCount in
                 self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
             }
@@ -426,9 +430,7 @@ class SuggestionService {
                 let items = words.map { word in
                     (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
                 }
-                let predicted = Set(items.map { $0.0.lowercased() })
-                let merged = items + baseline.filter { !predicted.contains($0.0.lowercased()) }
-                self.delegate?.suggestionService(self, didUpdateSuggestions: merged,
+                self.delegate?.suggestionService(self, didUpdateSuggestions: items,
                                                  autocorrect: nil, frequencies: frequencies)
             }
         } else {
