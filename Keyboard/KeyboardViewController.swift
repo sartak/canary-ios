@@ -976,7 +976,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         )
 
         // Show replacement suggestions (tapping replaces the inserted word).
-        // Replacements already exclude the committed word.
+        // Replacements already exclude the committed word. The cache mirrors
+        // them so the delegate forwarder can defend the correction bar
+        // against prediction deliveries (see suggestionService(_:didUpdate:)).
+        cachedSuggestions = (result.replacements, nil)
         suggestionView.setSuggestions(typeaheads: result.replacements, autocorrect: nil)
 
         // Debug overlay: draw the top candidates' ideal template polylines.
@@ -1328,10 +1331,35 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     // MARK: - SuggestionServiceDelegate
 
     func suggestionService(_ service: SuggestionService, didUpdateSuggestions typeahead: [(String, [InputAction])], autocorrect: String?, frequencies: CharacterDistribution) {
-        cachedSuggestions = (typeahead, autocorrect)
         characterFrequencies = frequencies
         keyboardTouchView?.characterFrequencies = characterFrequencies
         updateKeyHitboxes()
+
+        // Bar arbitration after a swipe commit: the decoder's replacement
+        // candidates (tap to correct the just-swiped word) are load-bearing
+        // and must neither vanish nor shift, while AI predictions are
+        // patient. So while a swipe correction is pending, the prediction
+        // flow's blank placeholder is ignored and prediction deliveries
+        // APPEND after the replacements. Anything else (typing) clears
+        // pendingSwipeContext before its update arrives, so real typeahead
+        // deliveries always take the normal path below.
+        if pendingSwipeContext != nil {
+            let isPredictionDelivery = !typeahead.isEmpty && typeahead.allSatisfy {
+                service.lastPredictedWords.contains($0.0.lowercased())
+            }
+            if typeahead.isEmpty || isPredictionDelivery {
+                let held = cachedSuggestions?.typeaheads ?? []
+                guard isPredictionDelivery else { return }
+                let heldWords = Set(held.map { $0.0.lowercased() })
+                let merged = held + typeahead.filter { !heldWords.contains($0.0.lowercased()) }
+                cachedSuggestions = (merged, nil)
+                suggestionView.setSuggestions(typeaheads: merged, autocorrect: nil,
+                                              predicted: service.lastPredictedWords)
+                return
+            }
+        }
+
+        cachedSuggestions = (typeahead, autocorrect)
         suggestionView.suggestionService(service, didUpdateSuggestions: typeahead, autocorrect: autocorrect, frequencies: frequencies)
     }
 
