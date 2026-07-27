@@ -36,12 +36,13 @@ private struct NextWordAlternatives {
 /// measured against the user's ask, not speculation's head start.
 final class PredictionService {
     // Apple's instruction house style (Foundation Models code-along): a
-    // "Your job is..." role line, short imperative rules, and one few-shot
-    // example. The example plus the schema's "alternatives" framing carry
-    // the two failure modes: extraction (echoing the text) and continuation
-    // chains (CONSECUTIVE words instead of options for ONE word). Built per
-    // request so the model generates exactly as many guesses as the bar
-    // will show - decode tokens are the battery cost, so none are wasted.
+    // "Your job is..." role line and short imperative rules. NO example —
+    // the 3B model parroted the example words verbatim as its answer for
+    // every input (logs: "What " -> minute, few, second), and the retained
+    // session then reinforced its own parroting from the transcript. If
+    // quality needs a demonstration, the right form is a seeded transcript
+    // turn, never example text in the instructions. Built per config so the
+    // model generates exactly as many guesses as the bar will show.
     private static func makeInstructions(count: Int) -> String {
         if count == 1 {
             return """
@@ -52,11 +53,8 @@ final class PredictionService {
 
                 Never respond with a continuation of several words.
                 Never repeat the text back. One single word, no punctuation.
-
-                Example: for the text "I'll be there in a" the guess is minute.
                 """
         }
-        let exampleWords = ["minute", "few", "second", "bit", "moment"].prefix(count).joined(separator: ", ")
         return """
             Your job is to predict the next word a person will type on their phone.
             The prompt is the text they have typed so far. It may end mid-sentence.
@@ -66,9 +64,6 @@ final class PredictionService {
             Every guess is a competing option for the same single position.
             Never respond with consecutive words of one sentence.
             Never repeat the text back. Single words only, no punctuation.
-
-            Example: for the text "I'll be there in a" the \(count) guesses are
-            \(exampleWords) - \(count) ways to fill the same blank.
             """
     }
 
