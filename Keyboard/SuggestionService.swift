@@ -416,12 +416,11 @@ class SuggestionService {
            !KeyboardSettings.predictionsDisabled,
            let before, !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let baseline = combinedTypeahead
-            predictionService.predict(context: before) { [weak self] words, latencyMS in
-                guard let self else { return }
-                if let latencyMS {
-                    self.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: words.count)
-                }
-                guard !words.isEmpty,
+            predictionService.onServe = { [weak self] latencyMS, wordCount in
+                self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
+            }
+            predictionService.predict(context: before) { [weak self] words in
+                guard let self, !words.isEmpty,
                       self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
                 self.lastPredictedWords = Set(words.map { $0.lowercased() })
                 let items = words.map { word in
@@ -432,6 +431,10 @@ class SuggestionService {
                 self.delegate?.suggestionService(self, didUpdateSuggestions: merged,
                                                  autocorrect: nil, frequencies: frequencies)
             }
+        } else {
+            // Typing resumed (or the field stopped qualifying): stop burning
+            // inference on a bar that can no longer show the result.
+            predictionService.cancel()
         }
     }
 
