@@ -460,7 +460,7 @@ class KeyboardTouchView: UIView, UIGestureRecognizerDelegate, MultiTouchKeyboard
                     polygon.addLine(to: point)
                 }
                 // Add semicircle at the head
-                if let lastPoint = visiblePath.last?.point, let lastLeft = leftEdge.last, let lastRight = rightEdge.last {
+                if let lastPoint = visiblePath.last?.point, let lastLeft = leftEdge.last {
                     let lastAge = now.timeIntervalSince(visiblePath.last!.time)
                     let lastProgress = CGFloat(1.0 - lastAge / tailDuration)
                     let radius = maxWidth * lastProgress * lastProgress / 2.0

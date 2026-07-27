@@ -22,6 +22,12 @@ import Foundation
 /// fresh rather than carrying server metadata; true conflicts surface as
 /// serverRecordChanged, are merged into the server record, and re-queued —
 /// self-correcting at the cost of an extra round trip.
+///
+/// Main-actor isolated: CKSyncEngineDelegate requires Sendable, and isolation
+/// is what makes the mutable engine reference legal — every caller (SwiftUI
+/// views, scenePhase) is main-actor already, and the async delegate
+/// requirements hop to the main actor at the call site.
+@MainActor
 final class DictionarySync: NSObject, CKSyncEngineDelegate {
     static let shared = DictionarySync()
 
@@ -140,7 +146,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         }
         guard !pending.isEmpty else { return nil }
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending) { recordID in
-            self.record(for: recordID)
+            await self.record(for: recordID)
         }
     }
 
