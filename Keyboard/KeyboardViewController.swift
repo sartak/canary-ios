@@ -712,6 +712,23 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     }
 
     private func performKeyAction(_ keyData: KeyData) {
+        // In swipe-only mode the exempt letters a/i are tappable precisely
+        // because they ARE whole words — so a tap commits like a swipe:
+        // cased word, trailing space, punctuation-ready. "I" always
+        // capitalizes; "A" follows shift (sentence starts).
+        if swipeOnlyEffective, case .simple(let text) = keyData.key.keyType,
+           let first = text.lowercased().first, first == "a" || first == "i" {
+            willHandleKeyTap()
+            usageStore?.recordKeyEvent(.character, key: text)
+            let word = first == "i" ? "I"
+                : (effectiveShiftState() != .unshifted ? "A" : "a")
+            executeActions([.insert(word + " "), .maybePunctuating(true)])
+            suggestionService.recordCommittedWord(word, trustCasing: false)
+            autoShift()
+            refreshSuggestions()
+            return
+        }
+
         keyData.key.didTap()
 
         switch keyData.key.keyType {
