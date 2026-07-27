@@ -36,10 +36,12 @@ private struct NextWords {
 /// measured against the user's ask, not speculation's head start.
 final class PredictionService {
     private static let instructions = """
-        You predict the next word a person will type on a phone keyboard.
-        Given the text before the cursor, respond with the five words most
-        likely to come next, most likely first. Use plain, common words that
-        fit the context. Single words only: no punctuation, no explanations.
+        You are a next-word predictor for a phone keyboard. Each prompt is
+        text the user has typed so far; it may end mid-sentence. Predict the
+        five different words most likely to come IMMEDIATELY AFTER the end of
+        that text, most likely first — as if continuing their writing. Never
+        repeat the text back and never summarize it. Plain, common words that
+        fit the flow; single words only, no punctuation, no explanations.
         """
 
     private var cache: [String: [String]] = [:]
@@ -141,7 +143,11 @@ final class PredictionService {
         inflightTask = Task { @MainActor [weak self] in
             let started = CFAbsoluteTimeGetCurrent()
             let session = LanguageModelSession(instructions: Self.instructions)
-            let prompt = "Text before the cursor:\n\(context)\n\nThe five most likely next words:"
+            // The prompt is the user's text and nothing else — meta framing
+            // ("the text before the cursor is...") makes the small model
+            // extract words from the text instead of continuing it.
+            let prompt = context
+            print("PredictionService: predicting after ...\(String(context.suffix(120)))")
             let words: [String]
             do {
                 let response = try await session.respond(
