@@ -14,7 +14,7 @@ import FoundationModels
 @available(iOS 26.0, *)
 @Generable
 private struct NextWordAlternatives {
-    @Guide(description: "Five different guesses for the same single next word - competing options for one position, never consecutive words of a phrase. Most likely guess first.", .count(5))
+    @Guide(description: "Different guesses for the same single next word - competing options for one position, never consecutive words of a phrase. Most likely guess first; exactly as many guesses as the instructions request.")
     var alternatives: [String]
 }
 #endif
@@ -39,20 +39,38 @@ final class PredictionService {
     // "Your job is..." role line, short imperative rules, and one few-shot
     // example. The example plus the schema's "alternatives" framing carry
     // the two failure modes: extraction (echoing the text) and continuation
-    // chains (five CONSECUTIVE words instead of five options for ONE word).
-    private static let instructions = """
-        Your job is to predict the next word a person will type on their phone.
-        The prompt is the text they have typed so far. It may end mid-sentence.
-        Exactly one word comes next. Respond with five different guesses for
-        that one word, most likely first.
+    // chains (CONSECUTIVE words instead of options for ONE word). Built per
+    // request so the model generates exactly as many guesses as the bar
+    // will show - decode tokens are the battery cost, so none are wasted.
+    private static func makeInstructions(count: Int) -> String {
+        if count == 1 {
+            return """
+                Your job is to predict the next word a person will type on their phone.
+                The prompt is the text they have typed so far. It may end mid-sentence.
+                Exactly one word comes next. Respond with your single best guess for
+                that word.
 
-        Every guess is a competing option for the same single position.
-        Never respond with consecutive words of one sentence.
-        Never repeat the text back. Single words only, no punctuation.
+                Never respond with a continuation of several words.
+                Never repeat the text back. One single word, no punctuation.
 
-        Example: for the text "I'll be there in a" the five guesses are
-        minute, few, second, bit, moment - five ways to fill the same blank.
-        """
+                Example: for the text "I'll be there in a" the guess is minute.
+                """
+        }
+        let exampleWords = ["minute", "few", "second", "bit", "moment"].prefix(count).joined(separator: ", ")
+        return """
+            Your job is to predict the next word a person will type on their phone.
+            The prompt is the text they have typed so far. It may end mid-sentence.
+            Exactly one word comes next. Respond with \(count) different guesses for
+            that one word, most likely first.
+
+            Every guess is a competing option for the same single position.
+            Never respond with consecutive words of one sentence.
+            Never repeat the text back. Single words only, no punctuation.
+
+            Example: for the text "I'll be there in a" the \(count) guesses are
+            \(exampleWords) - \(count) ways to fill the same blank.
+            """
+    }
 
     private var cache: [String: [String]] = [:]
     private var cacheOrder: [String] = []
@@ -89,17 +107,23 @@ final class PredictionService {
             let availability = SystemLanguageModel.default.availability
             print("PredictionService: availability = \(availability)")
             guard availability == .available else { return }
-            LanguageModelSession(instructions: Self.instructions).prewarm()
+            let count = max(1, KeyboardSettings.predictionWordCount)
+            LanguageModelSession(instructions: Self.makeInstructions(count: count)).prewarm()
         }
         #else
         print("PredictionService: FoundationModels not present in this SDK")
         #endif
     }
 
-    /// Cached words for a context, if a completed serve is already on hand
-    /// (lets callers skip their debounce for instant delivery).
-    func cachedWords(context: String) -> [String]? {
-        cache[context]
+    /// Cached words for a context and count, if a completed serve is already
+    /// on hand (lets callers skip their debounce for instant delivery).
+    /// Count-qualified: a setting change must never serve wrong-sized results.
+    func cachedWords(context: String, count: Int) -> [String]? {
+        cache[Self.cacheKey(context, count)]
+    }
+
+    private static func cacheKey(_ context: String, _ count: Int) -> String {
+        "\(count)#\(context)"
     }
 
     /// Stops any in-flight generation. Call whenever the bar can no longer
@@ -114,45 +138,47 @@ final class PredictionService {
     /// Predicts next words for the text before the cursor; the completion
     /// runs on the main actor, only for fresh, newest-request results.
     /// Cache hits answer synchronously.
-    func predict(context: String, completion: @escaping ([String]) -> Void) {
-        guard isAvailable else { return }
-        if let hit = cache[context] {
+    func predict(context: String, count: Int, completion: @escaping ([String]) -> Void) {
+        guard isAvailable, count > 0 else { return }
+        let key = Self.cacheKey(context, count)
+        if let hit = cache[key] {
             completion(hit)
             return
         }
-        if context == inflightContext {
+        if key == inflightContext {
             // The speculative prefetch guessed right: ride its generation
             // instead of restarting it, clock reset to this real ask.
             pendingCompletion = completion
             deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
             return
         }
-        start(context: context, completion: completion)
+        start(context: context, count: count, completion: completion)
     }
 
     /// Optimistic prefetch: warms the cache for `context` (typically the
     /// current context plus the top suggestion) without ever delivering.
     /// Never preempts an existing generation — speculation doesn't get to
     /// cancel real work, or earlier speculation that may yet be ridden.
-    func prefetch(context: String) {
-        guard isAvailable else { return }
-        guard cache[context] == nil, inflightContext == nil else { return }
-        start(context: context, completion: nil)
+    func prefetch(context: String, count: Int) {
+        guard isAvailable, count > 0 else { return }
+        guard cache[Self.cacheKey(context, count)] == nil, inflightContext == nil else { return }
+        start(context: context, count: count, completion: nil)
     }
 
-    private func start(context: String, completion: (([String]) -> Void)?) {
+    private func start(context: String, count: Int, completion: (([String]) -> Void)?) {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *) else { return }
         requestToken += 1
         let token = requestToken
         inflightTask?.cancel()
-        inflightContext = context
+        let key = Self.cacheKey(context, count)
+        inflightContext = key
         pendingCompletion = completion
         deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
 
         inflightTask = Task { @MainActor [weak self] in
             let started = CFAbsoluteTimeGetCurrent()
-            let session = LanguageModelSession(instructions: Self.instructions)
+            let session = LanguageModelSession(instructions: Self.makeInstructions(count: count))
             // The prompt is the user's text and nothing else — meta framing
             // ("the text before the cursor is...") makes the small model
             // extract words from the text instead of continuing it.
@@ -187,7 +213,7 @@ final class PredictionService {
             let elapsedMS = (CFAbsoluteTimeGetCurrent() - started) * 1000
             print("PredictionService: \(cleaned.count) words in \(String(format: "%.0f", elapsedMS))ms: \(cleaned.joined(separator: ", "))")
             self.onServe?(elapsedMS, cleaned.count)
-            self.store(cleaned, for: context)
+            self.store(cleaned, for: key)
 
             let completion = self.pendingCompletion
             let waited = CFAbsoluteTimeGetCurrent() - self.deliveryRequestedAt

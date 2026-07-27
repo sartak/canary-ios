@@ -98,9 +98,10 @@ class SuggestionService {
     /// Starts inference for `before` without any delivery — the handoff
     /// timeline's head start (called ~500ms after a swipe ends).
     func prefetchPredictions(before: String?) {
-        guard KeyboardSettings.predictionWordCount > 0, let before,
+        let count = KeyboardSettings.predictionWordCount
+        guard count > 0, let before,
               !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        predictionService.prefetch(context: before)
+        predictionService.prefetch(context: before, count: count)
     }
 
     /// Delivers prediction words to the bar with staleness re-checked, the
@@ -127,7 +128,7 @@ class SuggestionService {
         delegate?.suggestionService(self, didUpdateSuggestions: items,
                                     autocorrect: nil, frequencies: frequencies)
         if let top = words.first {
-            predictionService.prefetch(context: before + top + " ")
+            predictionService.prefetch(context: before + top + " ", count: count)
         }
     }
 
@@ -143,7 +144,7 @@ class SuggestionService {
         predictionService.onServe = { [weak self] latencyMS, wordCount in
             self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
         }
-        predictionService.predict(context: before) { [weak self] allWords in
+        predictionService.predict(context: before, count: count) { [weak self] allWords in
             guard let self else { return }
             let words = Array(allWords.prefix(count))
             guard !words.isEmpty else { return }
@@ -152,7 +153,7 @@ class SuggestionService {
                 (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
             }
             if let top = words.first {
-                self.predictionService.prefetch(context: before + top + " ")
+                self.predictionService.prefetch(context: before + top + " ", count: count)
             }
             completion(items, self.lastPredictedWords)
         }
@@ -507,7 +508,7 @@ class SuggestionService {
             predictionService.onServe = { [weak self] latencyMS, wordCount in
                 self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
             }
-            if let cached = predictionService.cachedWords(context: before) {
+            if let cached = predictionService.cachedWords(context: before, count: predictionCount) {
                 // A completed serve is on hand (chained pick, revisit):
                 // deliver in this same frame, no debounce, no inference.
                 deliverPredictions(cached, before: before, count: predictionCount,
@@ -517,7 +518,7 @@ class SuggestionService {
                 // the delay is a real pause worth spending inference on.
                 let work = DispatchWorkItem { [weak self] in
                     guard let self, self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
-                    self.predictionService.predict(context: before) { [weak self] allWords in
+                    self.predictionService.predict(context: before, count: predictionCount) { [weak self] allWords in
                         self?.deliverPredictions(allWords, before: before, count: predictionCount,
                                                  fallback: combinedTypeahead, frequencies: frequencies)
                     }
