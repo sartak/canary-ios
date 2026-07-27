@@ -13,9 +13,9 @@ import FoundationModels
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 @Generable
-private struct NextWords {
-    @Guide(description: "The five words most likely to be typed next, most likely first", .count(5))
-    var words: [String]
+private struct NextWordAlternatives {
+    @Guide(description: "Five different guesses for the same single next word - competing options for one position, never consecutive words of a phrase. Most likely guess first.", .count(5))
+    var alternatives: [String]
 }
 #endif
 
@@ -35,13 +35,23 @@ private struct NextWords {
 /// clock restarted at the moment of the real request, since lateness is
 /// measured against the user's ask, not speculation's head start.
 final class PredictionService {
+    // Apple's instruction house style (Foundation Models code-along): a
+    // "Your job is..." role line, short imperative rules, and one few-shot
+    // example. The example plus the schema's "alternatives" framing carry
+    // the two failure modes: extraction (echoing the text) and continuation
+    // chains (five CONSECUTIVE words instead of five options for ONE word).
     private static let instructions = """
-        You are a next-word predictor for a phone keyboard. Each prompt is
-        text the user has typed so far; it may end mid-sentence. Predict the
-        five different words most likely to come IMMEDIATELY AFTER the end of
-        that text, most likely first — as if continuing their writing. Never
-        repeat the text back and never summarize it. Plain, common words that
-        fit the flow; single words only, no punctuation, no explanations.
+        Your job is to predict the next word a person will type on their phone.
+        The prompt is the text they have typed so far. It may end mid-sentence.
+        Exactly one word comes next. Respond with five different guesses for
+        that one word, most likely first.
+
+        Every guess is a competing option for the same single position.
+        Never respond with consecutive words of one sentence.
+        Never repeat the text back. Single words only, no punctuation.
+
+        Example: for the text "I'll be there in a" the five guesses are
+        minute, few, second, bit, moment - five ways to fill the same blank.
         """
 
     private var cache: [String: [String]] = [:]
@@ -152,10 +162,10 @@ final class PredictionService {
             do {
                 let response = try await session.respond(
                     to: prompt,
-                    generating: NextWords.self,
+                    generating: NextWordAlternatives.self,
                     options: GenerationOptions(sampling: .greedy)
                 )
-                words = response.content.words
+                words = response.content.alternatives
             } catch {
                 // Guardrail refusal, context trouble, cancellation: nothing
                 // to surface; the bar stays as it is.
