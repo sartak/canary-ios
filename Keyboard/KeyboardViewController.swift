@@ -97,6 +97,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
                 actions.append(.maybePunctuating(true))
             }
             self.executeActions(actions)
+            // The phrase may end a sentence ("On my way!") where the literal
+            // trigger didn't: re-derive shift from the expanded text, exactly
+            // as if it had been typed by hand.
+            self.autoShift()
             self.usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: expansion.trigger, resolved: expansion.phrase)
         }
 
@@ -872,6 +876,10 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
             actions.append(.insert(phrase + " "))
             actions.append(.maybePunctuating(true))
             executeActions(actions)
+            // Re-derive shift from the expanded text (the autoShift above ran
+            // against the literal trigger): a phrase ending a sentence shifts
+            // the next letter, as if typed by hand.
+            autoShift()
             usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: result.word, resolved: phrase)
             refreshSuggestions()
             return
