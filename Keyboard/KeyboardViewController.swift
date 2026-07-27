@@ -1385,6 +1385,16 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         keyboardTouchView?.characterFrequencies = characterFrequencies
         updateKeyHitboxes()
 
+        // During the swipe-correction window the bar has exactly two
+        // legitimate writers: the swipe commit (replacements) and the timed
+        // handoff (predictions). Context refreshes in between still update
+        // frequencies and hitboxes above, but must not repaint the bar —
+        // with predictions suppressed, the sync path would deliver the
+        // frequency filler over the corrections. Typing clears the pending
+        // context before its update arrives, so normal deliveries resume
+        // the moment the window actually ends.
+        guard pendingSwipeContext == nil else { return }
+
         cachedSuggestions = (typeahead, autocorrect)
         suggestionView.suggestionService(service, didUpdateSuggestions: typeahead, autocorrect: autocorrect, frequencies: frequencies)
     }
