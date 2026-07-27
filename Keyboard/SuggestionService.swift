@@ -83,6 +83,48 @@ class SuggestionService {
     /// on every context update; set again when a delivery lands.
     private(set) var lastPredictedWords: Set<String> = []
 
+    /// While true, updateContext neither blanks the bar nor queries the
+    /// model: the controller owns the timed post-swipe handoff (corrections
+    /// hold the bar for a beat, then predictions replace them).
+    var suppressPredictions = false
+
+    var predictionsAvailable: Bool { predictionService.isAvailable }
+
+    /// Starts inference for `before` without any delivery — the handoff
+    /// timeline's head start (called ~500ms after a swipe ends).
+    func prefetchPredictions(before: String?) {
+        guard KeyboardSettings.predictionWordCount > 0, let before,
+              !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        predictionService.prefetch(context: before)
+    }
+
+    /// Predictions as ready-to-show bar items, same pipeline as the
+    /// empty-hopper flow (count, serve telemetry, chained prefetch), but the
+    /// CONTROLLER owns delivery timing and staleness — it holds the proxy.
+    /// The completion may run synchronously on a cache hit.
+    func predictions(before: String?,
+                     completion: @escaping ([(String, [InputAction])], Set<String>) -> Void) {
+        let count = KeyboardSettings.predictionWordCount
+        guard count > 0, let before,
+              !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        predictionService.onServe = { [weak self] latencyMS, wordCount in
+            self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
+        }
+        predictionService.predict(context: before) { [weak self] allWords in
+            guard let self else { return }
+            let words = Array(allWords.prefix(count))
+            guard !words.isEmpty else { return }
+            self.lastPredictedWords = Set(words.map { $0.lowercased() })
+            let items = words.map { word in
+                (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
+            }
+            if let top = words.first {
+                self.predictionService.prefetch(context: before + top + " ")
+            }
+            completion(items, self.lastPredictedWords)
+        }
+    }
+
     /// Lowercased runner-up corrections currently in the bar — they're
     /// spelling corrections, so the view paints them correction-orange.
     var correctionsInBar: Set<String> {
@@ -413,6 +455,7 @@ class SuggestionService {
         // is re-checked on delivery.
         let predictionCount = KeyboardSettings.predictionWordCount
         let willPredict = prefix.isEmpty && suffix.isEmpty && learningEnabled
+            && !suppressPredictions
             && predictionCount > 0
             && predictionService.isAvailable
             && before?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false

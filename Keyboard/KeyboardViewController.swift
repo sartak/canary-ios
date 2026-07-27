@@ -53,6 +53,12 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
 
     private var lastSwipePath: [CGPoint] = []
     private var lastLiveDecodeTime: CFAbsoluteTime = 0
+    /// The post-swipe handoff timeline: corrections own the bar for a beat,
+    /// inference gets a head start, then predictions replace corrections
+    /// (delays in PredictionTuning). Both cancel when anything clears the
+    /// pending swipe context.
+    private var swipeInferenceTimer: Timer?
+    private var swipeHandoffTimer: Timer?
     /// Swipe-only mode (configuration key on the number layer, like
     /// the debug toggle), persisted across sessions: letter keys become
     /// tap-inert so entering letters requires swiping — for unlearning tap
@@ -891,6 +897,32 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     /// stale swipe is never mislogged as a correction.
     private func clearPendingSwipeContext() {
         pendingSwipeContext = nil
+        swipeInferenceTimer?.invalidate()
+        swipeInferenceTimer = nil
+        swipeHandoffTimer?.invalidate()
+        swipeHandoffTimer = nil
+        suggestionService.suppressPredictions = false
+    }
+
+    /// The correction window closed with the bar untouched: corrections
+    /// expire (context cleared, so bar taps become prediction picks) and
+    /// predictions take the bar — from cache in the same frame when the
+    /// head-start inference finished, otherwise the bar sits empty and
+    /// fills when the model answers. Staleness re-checked against the
+    /// proxy, since the completion may land after further typing.
+    private func handOffSwipeBarToPredictions() {
+        guard pendingSwipeContext != nil else { return }
+        let before = textDocumentProxy.documentContextBeforeInput
+        clearPendingSwipeContext()
+        cachedSuggestions = ([], nil)
+        suggestionView.setSuggestions(typeaheads: [], autocorrect: nil)
+        suggestionService.predictions(before: before) { [weak self] items, predicted in
+            guard let self,
+                  self.textDocumentProxy.documentContextBeforeInput == before else { return }
+            self.cachedSuggestions = (items, nil)
+            self.suggestionView.setSuggestions(typeaheads: items, autocorrect: nil,
+                                               predicted: predicted)
+        }
     }
 
     /// Logs a suggestion-bar tap: a swipe correction when it replaces a
@@ -976,11 +1008,29 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         )
 
         // Show replacement suggestions (tapping replaces the inserted word).
-        // Replacements already exclude the committed word. The cache mirrors
-        // them so the delegate forwarder can defend the correction bar
-        // against prediction deliveries (see suggestionService(_:didUpdate:)).
+        // Replacements already exclude the committed word.
         cachedSuggestions = (result.replacements, nil)
         suggestionView.setSuggestions(typeaheads: result.replacements, autocorrect: nil)
+
+        // The timed handoff: corrections own the bar exclusively for
+        // PredictionTuning.swipeHandoffDelay (the empty-hopper flow is suppressed
+        // while the swipe context pends), inference starts partway through
+        // so the words are usually ready, then predictions REPLACE the
+        // corrections — one bar owner at a time. Gated like the empty-hopper
+        // flow: natural-language hosts, predictions on, model available.
+        if !autocorrectAppDisabled, suggestionService.predictionsAvailable,
+           KeyboardSettings.predictionWordCount > 0 {
+            suggestionService.suppressPredictions = true
+            swipeInferenceTimer = Timer.scheduledTimer(withTimeInterval: PredictionTuning.swipeInferenceDelay,
+                                                       repeats: false) { [weak self] _ in
+                guard let self, self.pendingSwipeContext != nil else { return }
+                self.suggestionService.prefetchPredictions(before: self.textDocumentProxy.documentContextBeforeInput)
+            }
+            swipeHandoffTimer = Timer.scheduledTimer(withTimeInterval: PredictionTuning.swipeHandoffDelay,
+                                                     repeats: false) { [weak self] _ in
+                self?.handOffSwipeBarToPredictions()
+            }
+        }
 
         // Debug overlay: draw the top candidates' ideal template polylines.
         if keyboardTouchView.showDebugSwipePath {
@@ -1334,30 +1384,6 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         characterFrequencies = frequencies
         keyboardTouchView?.characterFrequencies = characterFrequencies
         updateKeyHitboxes()
-
-        // Bar arbitration after a swipe commit: the decoder's replacement
-        // candidates (tap to correct the just-swiped word) are load-bearing
-        // and must neither vanish nor shift, while AI predictions are
-        // patient. So while a swipe correction is pending, the prediction
-        // flow's blank placeholder is ignored and prediction deliveries
-        // APPEND after the replacements. Anything else (typing) clears
-        // pendingSwipeContext before its update arrives, so real typeahead
-        // deliveries always take the normal path below.
-        if pendingSwipeContext != nil {
-            let isPredictionDelivery = !typeahead.isEmpty && typeahead.allSatisfy {
-                service.lastPredictedWords.contains($0.0.lowercased())
-            }
-            if typeahead.isEmpty || isPredictionDelivery {
-                let held = cachedSuggestions?.typeaheads ?? []
-                guard isPredictionDelivery else { return }
-                let heldWords = Set(held.map { $0.0.lowercased() })
-                let merged = held + typeahead.filter { !heldWords.contains($0.0.lowercased()) }
-                cachedSuggestions = (merged, nil)
-                suggestionView.setSuggestions(typeaheads: merged, autocorrect: nil,
-                                              predicted: service.lastPredictedWords)
-                return
-            }
-        }
 
         cachedSuggestions = (typeahead, autocorrect)
         suggestionView.suggestionService(service, didUpdateSuggestions: typeahead, autocorrect: autocorrect, frequencies: frequencies)

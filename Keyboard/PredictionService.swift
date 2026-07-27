@@ -10,6 +10,31 @@ import Foundation
 import FoundationModels
 #endif
 
+/// Every tunable constant for foundation-model predictions, in one place
+/// (mirrors SwipeTuning's doc style). Expect these to move as real-world
+/// latency and taste data comes in.
+enum PredictionTuning {
+    /// Longest context suffix sent to the model; keeps prompts small and
+    /// latency keystroke-friendly.
+    static let contextLimit = 240
+
+    /// Results delivered later than this after they were asked for are
+    /// cached but not shown; they surface at the next natural refresh.
+    static let deliveryWindow: TimeInterval = 0.5
+
+    /// Recent context → words cache slots. More than one so speculative
+    /// prefetches can't evict the context currently on screen.
+    static let cacheCapacity = 8
+
+    /// After a swipe commits, how long until inference starts for the
+    /// correction-to-prediction handoff (the model's head start).
+    static let swipeInferenceDelay: TimeInterval = 0.5
+
+    /// After a swipe commits, how long the correction candidates own the
+    /// bar before predictions replace them.
+    static let swipeHandoffDelay: TimeInterval = 1.0
+}
+
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 @Generable
@@ -41,18 +66,6 @@ final class PredictionService {
         likely to come next, most likely first. Use plain, common words that
         fit the context. Single words only: no punctuation, no explanations.
         """
-
-    /// Longest context suffix sent to the model; keeps prompts small and
-    /// latency keystroke-friendly.
-    private static let contextLimit = 240
-
-    /// Results delivered later than this after they were asked for are
-    /// cached but not shown; they surface at the next natural refresh.
-    private static let deliveryWindow: TimeInterval = 0.5
-
-    /// Recent context → words results. More than one slot so speculative
-    /// prefetches can't evict the context currently on screen.
-    private static let cacheCapacity = 8
 
     private var cache: [String: [String]] = [:]
     private var cacheOrder: [String] = []
@@ -110,7 +123,7 @@ final class PredictionService {
     /// Cache hits answer synchronously.
     func predict(context: String, completion: @escaping ([String]) -> Void) {
         guard isAvailable else { return }
-        let trimmed = String(context.suffix(Self.contextLimit))
+        let trimmed = String(context.suffix(PredictionTuning.contextLimit))
         if let hit = cache[trimmed] {
             completion(hit)
             return
@@ -131,7 +144,7 @@ final class PredictionService {
     /// cancel real work, or earlier speculation that may yet be ridden.
     func prefetch(context: String) {
         guard isAvailable else { return }
-        let trimmed = String(context.suffix(Self.contextLimit))
+        let trimmed = String(context.suffix(PredictionTuning.contextLimit))
         guard cache[trimmed] == nil, inflightContext == nil else { return }
         start(context: trimmed, completion: nil)
     }
@@ -189,7 +202,7 @@ final class PredictionService {
 
             // Late results never repaint the bar mid-gaze; the cache above
             // surfaces them synchronously at the next refresh instead.
-            if let completion, waited <= Self.deliveryWindow {
+            if let completion, waited <= PredictionTuning.deliveryWindow {
                 completion(cleaned)
             }
         }
@@ -199,7 +212,7 @@ final class PredictionService {
     private func store(_ words: [String], for context: String) {
         if cache[context] == nil {
             cacheOrder.append(context)
-            if cacheOrder.count > Self.cacheCapacity {
+            if cacheOrder.count > PredictionTuning.cacheCapacity {
                 cache.removeValue(forKey: cacheOrder.removeFirst())
             }
         }
