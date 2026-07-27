@@ -368,6 +368,21 @@ final class DictionaryStore {
         return (words, shortcuts)
     }
 
+    /// Wipes every typing-data table on this device: learned words,
+    /// tombstones, usage counts, shortcuts, correction logs, counters.
+    /// Deliberately NOT tombstone-based — pair with DictionarySync's zone
+    /// deletion, or a live sync would simply re-download everything
+    /// (absence is not deletion in the merge rules). Engine sync state is
+    /// kept; the engine reconciles against the deleted zone itself.
+    func resetAllTypingData() {
+        exec("BEGIN")
+        for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts",
+                      "tap_events", "swipe_corrections", "counters"] {
+            exec("DELETE FROM \(table)")
+        }
+        exec("COMMIT")
+    }
+
     /// Re-queues every row for push (account change / zone re-creation).
     func markAllDirty() {
         for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts"] {

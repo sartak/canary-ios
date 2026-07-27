@@ -66,6 +66,19 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         }
     }
 
+    /// Deletes the CloudKit zone — the remote half of a typing-data reset
+    /// (one operation removes every record in it). Call AFTER the local wipe;
+    /// with local tables already empty, the zone-deletion echo the next fetch
+    /// reports re-creates an empty zone and pushes nothing.
+    func resetCloudData() {
+        guard let store = DictionaryStore() else { return }
+        let engine = ensureEngine(store: store)
+        engine.state.add(pendingDatabaseChanges: [.deleteZone(Self.zoneID)])
+        Task {
+            try? await engine.sendChanges()
+        }
+    }
+
     /// When the app last completed a send, for the UI footer.
     static var lastSync: Date? {
         UserDefaults.standard.object(forKey: lastSyncKey) as? Date

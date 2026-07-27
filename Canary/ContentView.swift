@@ -22,6 +22,11 @@ struct ContentView: View {
                     } label: {
                         Label("Shortcuts", systemImage: "arrow.right.circle")
                     }
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
                 }
             }
             .navigationTitle("Canary")
