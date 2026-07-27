@@ -30,6 +30,11 @@ enum PredictionTuning {
     /// correction-to-prediction handoff (the model's head start).
     static let swipeInferenceDelay: TimeInterval = 0.5
 
+    /// After a tap-typed word boundary, how long the hopper must stay empty
+    /// before inference starts. Continuous typing cancels the wait and burns
+    /// nothing; cache hits bypass it entirely.
+    static let tapInferenceDelay: TimeInterval = 0.35
+
     /// After a swipe commits, how long the correction candidates own the
     /// bar before predictions replace them.
     static let swipeHandoffDelay: TimeInterval = 1.0
@@ -107,6 +112,12 @@ final class PredictionService {
         #else
         print("PredictionService: FoundationModels not present in this SDK")
         #endif
+    }
+
+    /// Cached words for a context, if a completed serve is already on hand
+    /// (lets callers skip their debounce for instant delivery).
+    func cachedWords(context: String) -> [String]? {
+        cache[String(context.suffix(PredictionTuning.contextLimit))]
     }
 
     /// Stops any in-flight generation. Call whenever the bar can no longer

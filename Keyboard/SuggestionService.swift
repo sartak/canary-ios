@@ -88,6 +88,11 @@ class SuggestionService {
     /// hold the bar for a beat, then predictions replace them).
     var suppressPredictions = false
 
+    /// The tap-boundary debounce: inference starts only once the hopper has
+    /// stayed empty for tapInferenceDelay. Superseded by every context
+    /// update, so continuous typing never queries the model.
+    private var predictionDebounce: DispatchWorkItem?
+
     var predictionsAvailable: Bool { predictionService.isAvailable }
 
     /// Starts inference for `before` without any delivery — the handoff
@@ -96,6 +101,34 @@ class SuggestionService {
         guard KeyboardSettings.predictionWordCount > 0, let before,
               !before.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         predictionService.prefetch(context: before)
+    }
+
+    /// Delivers prediction words to the bar with staleness re-checked, the
+    /// filler as the nothing-usable fallback, and the chained prefetch for
+    /// the world where the user taps the top word.
+    private func deliverPredictions(_ allWords: [String], before: String, count: Int,
+                                    fallback: [(String, [InputAction])],
+                                    frequencies: CharacterDistribution) {
+        // The model always yields five; the bar takes the configured prefix
+        // so the cache never depends on the setting.
+        let words = Array(allWords.prefix(count))
+        guard lastTypedWord.isEmpty, contextBefore == before else { return }
+        guard !words.isEmpty else {
+            // The model answered with nothing usable: the frequency filler
+            // beats a permanently empty bar.
+            delegate?.suggestionService(self, didUpdateSuggestions: fallback,
+                                        autocorrect: nil, frequencies: frequencies)
+            return
+        }
+        lastPredictedWords = Set(words.map { $0.lowercased() })
+        let items = words.map { word in
+            (word, createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
+        }
+        delegate?.suggestionService(self, didUpdateSuggestions: items,
+                                    autocorrect: nil, frequencies: frequencies)
+        if let top = words.first {
+            predictionService.prefetch(context: before + top + " ")
+        }
     }
 
     /// Predictions as ready-to-show bar items, same pipeline as the
@@ -468,36 +501,30 @@ class SuggestionService {
         delegate?.suggestionService(self, didUpdateSuggestions: barItems,
                                     autocorrect: autocorrectSuggestion, frequencies: frequencies)
 
+        predictionDebounce?.cancel()
+        predictionDebounce = nil
         if willPredict, let before {
             predictionService.onServe = { [weak self] latencyMS, wordCount in
                 self?.usageStore?.recordPredictionServe(durationMS: latencyMS, wordCount: wordCount)
             }
-            predictionService.predict(context: before) { [weak self] allWords in
-                // The model always yields five; the bar takes the configured
-                // prefix so the cache never depends on the setting.
-                let words = Array(allWords.prefix(predictionCount))
-                guard let self,
-                      self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
-                guard !words.isEmpty else {
-                    // The model answered with nothing usable: the frequency
-                    // filler beats a permanently empty bar.
-                    self.delegate?.suggestionService(self, didUpdateSuggestions: combinedTypeahead,
-                                                     autocorrect: nil, frequencies: frequencies)
-                    return
+            if let cached = predictionService.cachedWords(context: before) {
+                // A completed serve is on hand (chained pick, revisit):
+                // deliver in this same frame, no debounce, no inference.
+                deliverPredictions(cached, before: before, count: predictionCount,
+                                   fallback: combinedTypeahead, frequencies: frequencies)
+            } else {
+                // Tap-boundary debounce: only a hopper that STAYS empty for
+                // the delay is a real pause worth spending inference on.
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self, self.lastTypedWord.isEmpty, self.contextBefore == before else { return }
+                    self.predictionService.predict(context: before) { [weak self] allWords in
+                        self?.deliverPredictions(allWords, before: before, count: predictionCount,
+                                                 fallback: combinedTypeahead, frequencies: frequencies)
+                    }
                 }
-                self.lastPredictedWords = Set(words.map { $0.lowercased() })
-                let items = words.map { word in
-                    (word, self.createInputActions(for: word, prefix: "", suffix: "", excludeTrailingSpace: false))
-                }
-                self.delegate?.suggestionService(self, didUpdateSuggestions: items,
-                                                 autocorrect: nil, frequencies: frequencies)
-                // Optimistic prefetch: warm the model for the world where
-                // the user taps the top word, so a chained pick's bar fills
-                // from cache in the same frame. Runs on cache-hit deliveries
-                // too, which is what keeps repeated picks instant.
-                if let top = words.first {
-                    self.predictionService.prefetch(context: before + top + " ")
-                }
+                predictionDebounce = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + PredictionTuning.tapInferenceDelay,
+                                              execute: work)
             }
         } else {
             // Typing resumed (or the field stopped qualifying): stop burning
