@@ -12,6 +12,7 @@ import SwiftUI
 /// sees the other's flips), plus the nuclear option — reset all typing data
 /// on this device and in iCloud.
 struct SettingsView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var swipeOnly = KeyboardSettings.swipeOnlyMode
     @State private var autocorrect = !KeyboardSettings.autocorrectUserDisabled
     @State private var debugVisualization = KeyboardSettings.debugVisualizationEnabled
@@ -23,16 +24,22 @@ struct SettingsView: View {
             Section {
                 Toggle("Swipe-Only Mode", isOn: $swipeOnly)
                     .onChange(of: swipeOnly) { _, value in
+                        // Guarded: refreshSettings' programmatic re-reads must
+                        // not re-stamp values that didn't change (a spurious
+                        // stamp could win a cross-device merge).
+                        guard value != KeyboardSettings.swipeOnlyMode else { return }
                         KeyboardSettings.swipeOnlyMode = value
                         SettingsSync.sync()
                     }
                 Toggle("Autocorrect", isOn: $autocorrect)
                     .onChange(of: autocorrect) { _, value in
+                        guard value != !KeyboardSettings.autocorrectUserDisabled else { return }
                         KeyboardSettings.autocorrectUserDisabled = !value
                         SettingsSync.sync()
                     }
                 Toggle("Debug Visualization", isOn: $debugVisualization)
                     .onChange(of: debugVisualization) { _, value in
+                        guard value != KeyboardSettings.debugVisualizationEnabled else { return }
                         KeyboardSettings.debugVisualizationEnabled = value
                         SettingsSync.sync()
                     }
@@ -62,13 +69,23 @@ struct SettingsView: View {
         .alert("Typing data reset", isPresented: $resetDone) {
             Button("OK", role: .cancel) {}
         }
-        .onAppear {
-            // The keyboard (or another device via SettingsSync) may have
-            // flipped these since the view was last built.
-            swipeOnly = KeyboardSettings.swipeOnlyMode
-            autocorrect = !KeyboardSettings.autocorrectUserDisabled
-            debugVisualization = KeyboardSettings.debugVisualizationEnabled
+        .onAppear(perform: refreshSettings)
+        // onAppear fires on navigation push, NOT when the app returns from
+        // background — which is exactly when the keyboard (used in some other
+        // app) flipped a toggle. Re-read on activation too.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                refreshSettings()
+            }
         }
+    }
+
+    /// The keyboard (or another device via SettingsSync) may have flipped
+    /// these since the view last read them.
+    private func refreshSettings() {
+        swipeOnly = KeyboardSettings.swipeOnlyMode
+        autocorrect = !KeyboardSettings.autocorrectUserDisabled
+        debugVisualization = KeyboardSettings.debugVisualizationEnabled
     }
 
     private func reset() {
