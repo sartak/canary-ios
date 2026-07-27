@@ -625,6 +625,19 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         if let behavior = keyData.key.longPressBehavior {
             switch behavior {
             case .repeating:
+                // Holding backspace while undo is armed means ONE plain
+                // delete (typically the trailing space after a completion) —
+                // tap stays undo, and repeating doesn't start, so the hold
+                // can't eat the field. Release and hold again for ordinary
+                // repeat. Marking the key as "repeating" consumes the press
+                // so touch-up doesn't fire a second delete; stopKeyRepeat
+                // clears it on release (there's no timer to stop).
+                if case .backspace = keyData.key.keyType, undoActions != nil {
+                    clearUndo()
+                    performKeyAction(keyData)
+                    currentlyRepeatingKey = keyData
+                    return
+                }
                 startKeyRepeat(for: keyData)
             case .alternates:
                 // Alternates are handled by the gesture recognizer
