@@ -23,6 +23,11 @@ struct ContentView: View {
                         Label("Shortcuts", systemImage: "arrow.right.circle")
                     }
                     NavigationLink {
+                        StatsView()
+                    } label: {
+                        Label("Stats", systemImage: "chart.bar")
+                    }
+                    NavigationLink {
                         SettingsView()
                     } label: {
                         Label("Settings", systemImage: "gearshape")

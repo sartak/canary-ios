@@ -237,6 +237,219 @@ final class DictionaryStore {
         return word.contains { $0.isLetter }
     }
 
+    // MARK: - Stats (StatsView)
+
+    struct HourActivity: Identifiable {
+        let hour: Int
+        let count: Int
+        var id: Int { hour }
+    }
+
+    struct DayActivity: Identifiable {
+        let day: Date
+        let count: Int
+        var id: Date { day }
+    }
+
+    struct WordCount: Identifiable {
+        let word: String
+        let count: Int
+        var id: String { word }
+    }
+
+    struct StatsSummary {
+        var keystrokes = 0
+        var wordsTyped = 0
+        var wordsLearned = 0
+        var swipeCommits = 0
+        var swipeCorrections = 0
+        var autocorrectApplied = 0
+        var autocorrectRejected = 0
+        var autocorrectReverted = 0
+        var charsSavedByShortcuts = 0
+    }
+
+    /// Keystrokes per local hour of day over the window, all 24 hours present.
+    func keystrokesByHour(days: Int) -> [HourActivity] {
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var counts = [Int](repeating: 0, count: 24)
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT CAST(strftime('%H', created_at, 'unixepoch', 'localtime') AS INTEGER), COUNT(*) FROM key_events WHERE created_at >= ? GROUP BY 1", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let hour = Int(sqlite3_column_int64(statement, 0))
+                if (0..<24).contains(hour) {
+                    counts[hour] = Int(sqlite3_column_int64(statement, 1))
+                }
+            }
+            sqlite3_finalize(statement)
+        }
+        return counts.enumerated().map { HourActivity(hour: $0.offset, count: $0.element) }
+    }
+
+    /// Keystrokes per local calendar day over the window, missing days zero.
+    func keystrokesByDay(days: Int) -> [DayActivity] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let start = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return [] }
+
+        var byDay: [Date: Int] = [:]
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime'), COUNT(*) FROM key_events WHERE created_at >= ? GROUP BY 1", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, start.timeIntervalSince1970)
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.timeZone = calendar.timeZone
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let dayPtr = sqlite3_column_text(statement, 0),
+                   let day = formatter.date(from: String(cString: dayPtr)) {
+                    byDay[day] = Int(sqlite3_column_int64(statement, 1))
+                }
+            }
+            sqlite3_finalize(statement)
+        }
+
+        return (0..<days).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: start) else { return nil }
+            return DayActivity(day: day, count: byDay[day] ?? 0)
+        }
+    }
+
+    /// Most-typed words over the window, from the time-resolved event stream.
+    func topWords(days: Int, limit: Int) -> [WordCount] {
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var result: [WordCount] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT word_lower, COUNT(*) FROM word_events WHERE created_at >= ? GROUP BY word_lower ORDER BY COUNT(*) DESC, word_lower ASC LIMIT ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            sqlite3_bind_int64(statement, 2, Int64(limit))
+            while sqlite3_step(statement) == SQLITE_ROW {
+                if let wordPtr = sqlite3_column_text(statement, 0) {
+                    result.append(WordCount(word: String(cString: wordPtr),
+                                            count: Int(sqlite3_column_int64(statement, 1))))
+                }
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
+    /// Cumulative learned-word count over time, one point per learn event.
+    func learnedWordGrowth() -> [DayActivity] {
+        var result: [DayActivity] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT learned_at FROM learned_words ORDER BY learned_at ASC", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            var total = 0
+            while sqlite3_step(statement) == SQLITE_ROW {
+                total += 1
+                result.append(DayActivity(day: Date(timeIntervalSince1970: sqlite3_column_double(statement, 0)),
+                                          count: total))
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
+    struct TypingEvent {
+        let at: Double
+        let kind: Int
+        let key: String?
+    }
+
+    /// Raw character/space/backspace events for client-side session analysis
+    /// (WPM, digraph latencies, backspace rate). Personal-scale row counts;
+    /// SQL pre-aggregation would just obscure the session logic.
+    func typingEvents(days: Int) -> [TypingEvent] {
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var result: [TypingEvent] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT created_at, kind, key FROM key_events WHERE created_at >= ? AND kind IN (0, 1, 2) ORDER BY created_at ASC", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let key = sqlite3_column_text(statement, 2).map { String(cString: $0) }
+                result.append(TypingEvent(at: sqlite3_column_double(statement, 0),
+                                          kind: Int(sqlite3_column_int64(statement, 1)),
+                                          key: key))
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
+    /// Fraction of committed words entered by swipe, per local day.
+    func swipeShareByDay(days: Int) -> [DayShare] {
+        let calendar = Calendar.current
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var result: [DayShare] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime'), COUNT(*), SUM(source) FROM word_events WHERE created_at >= ? GROUP BY 1 ORDER BY 1 ASC", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            formatter.timeZone = calendar.timeZone
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let dayPtr = sqlite3_column_text(statement, 0),
+                      let day = formatter.date(from: String(cString: dayPtr)) else { continue }
+                let total = Double(sqlite3_column_int64(statement, 1))
+                let swiped = Double(sqlite3_column_int64(statement, 2))
+                guard total > 0 else { continue }
+                result.append(DayShare(day: day, share: swiped / total))
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
+    struct DayShare: Identifiable {
+        let day: Date
+        let share: Double
+        var id: Date { day }
+    }
+
+    /// Swipe decode durations over the window, for the median glance figure.
+    func swipeDecodeDurations(days: Int) -> [Double] {
+        let cutoff = Date().timeIntervalSince1970 - Double(days) * 86_400
+        var result: [Double] = []
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT duration_ms FROM swipe_events WHERE created_at >= ?", -1, &stmt, nil) == SQLITE_OK,
+           let statement = stmt {
+            sqlite3_bind_double(statement, 1, cutoff)
+            while sqlite3_step(statement) == SQLITE_ROW {
+                result.append(sqlite3_column_double(statement, 0))
+            }
+            sqlite3_finalize(statement)
+        }
+        return result
+    }
+
+    func statsSummary() -> StatsSummary {
+        var summary = StatsSummary()
+        summary.keystrokes = scalar("SELECT COUNT(*) FROM key_events")
+        summary.wordsTyped = scalar("SELECT COUNT(*) FROM word_events")
+        summary.wordsLearned = scalar("SELECT COUNT(*) FROM learned_words")
+        summary.swipeCommits = scalar("SELECT value FROM counters WHERE name = 'swipe_commits'")
+        summary.swipeCorrections = scalar("SELECT COUNT(*) FROM swipe_corrections")
+        summary.autocorrectApplied = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'autocorrect_applied'")
+        summary.autocorrectRejected = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'autocorrect_rejected'")
+        summary.autocorrectReverted = scalar("SELECT COUNT(*) FROM tap_events WHERE kind = 'autocorrect_reverted'")
+        summary.charsSavedByShortcuts = scalar("SELECT COALESCE(SUM(LENGTH(resolved) - LENGTH(typed)), 0) FROM tap_events WHERE kind = 'shortcut_expanded'")
+        return summary
+    }
+
+    private func scalar(_ sql: String) -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let statement = stmt else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
     // MARK: - Sync support (DictionarySync)
 
     /// Serialized CKSyncEngine state, persisted beside the data it describes.
@@ -450,7 +663,8 @@ final class DictionaryStore {
     func resetAllTypingData() {
         exec("BEGIN")
         for table in ["word_usage", "learned_words", "unlearned_words", "shortcuts",
-                      "tap_events", "swipe_corrections", "counters"] {
+                      "tap_events", "swipe_corrections", "counters",
+                      "key_events", "word_events", "swipe_events", "devices"] {
             exec("DELETE FROM \(table)")
         }
         // Record change tags go too (the zone is about to be deleted);
