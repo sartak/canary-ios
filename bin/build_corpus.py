@@ -59,6 +59,17 @@ def load_word_list(filepath: str) -> Dict[str, Tuple[str, int]]:
     return word_list
 
 
+def load_cased_words(filepath: str) -> Dict[str, str]:
+    """Load a cased word list keyed by lowercase; blank lines and # comments skipped."""
+    cased = {}
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            word = line.strip()
+            if word and not word.startswith('#'):
+                cased[word.lower()] = word
+    return cased
+
+
 def load_hidden_words(filepath: str) -> Set[str]:
     """Load hidden words into a set for fast lookup."""
     hidden = set()
@@ -457,17 +468,34 @@ def build_filtered_corpus():
     hidden_words = load_hidden_words('corpus/hidden_words.txt')
     print(f"Loaded {len(hidden_words)} hidden words")
 
+    print("Loading proper nouns...")
+    proper_nouns = load_cased_words('corpus/proper_nouns.txt')
+    recased_words = load_cased_words('corpus/recased_words.txt')
+    print(f"Loaded {len(proper_nouns)} proper nouns, {len(recased_words)} casing overrides")
+
     print("Loading word counts...")
     word_counts = load_word_counts('corpus/count_1w.txt')
     print(f"Loaded {len(word_counts)} word counts")
 
+    # The dictionary allowlist has no proper nouns, so curated ones are
+    # admitted separately - but only above this frequency-rank line
+    # (Philadelphia at 2656 clears it; Fresno at 10294 does not).
+    PROPER_NOUN_RANK_LIMIT = 7000
+
     print("Filtering words...")
     filtered_words = []
+    admitted_proper = 0
     for word_lower, (original_word, rank) in word_list.items():
         if word_lower in legitimate_words or word_lower in hidden_words:
-            filtered_words.append((original_word, rank))
+            # Casing override for dictionary words that are dominantly proper
+            # nouns ("canada" -> "Canada"); homographs stay out of that file.
+            filtered_words.append((recased_words.get(word_lower, original_word), rank))
+        elif word_lower in proper_nouns and rank <= PROPER_NOUN_RANK_LIMIT:
+            filtered_words.append((proper_nouns[word_lower], rank))
+            admitted_proper += 1
 
-    print(f"Found {len(filtered_words)} words that are both frequent and legitimate or hidden")
+    print(f"Found {len(filtered_words)} words that are frequent and legitimate, "
+          f"hidden, or proper ({admitted_proper} proper nouns admitted)")
 
     # Sort by rank (ascending - lower rank = higher frequency)
     filtered_words.sort(key=lambda x: x[1])

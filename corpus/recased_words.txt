@@ -1,0 +1,45 @@
+# Casing overrides for words already in legitimate_words.txt whose dominant
+# use is a proper noun: the corpus keeps the word, the display casing becomes
+# this. Homographs where the common noun matters (may, march, august, turkey,
+# polish, bill, will, mark, buffalo) are deliberately absent — they stay
+# lowercase and shifted typing handles the proper-noun case.
+Canada
+China
+India
+Japan
+Russia
+Spain
+Brazil
+Greece
+Texas
+Virginia
+Colorado
+Michigan
+Alaska
+Boston
+York
+Paris
+Berlin
+English
+French
+German
+Chinese
+Dutch
+Greek
+Welsh
+Danish
+Google
+Amazon
+Hong
+Vegas
+Linux
+Easter
+Thanksgiving
+Jesus
+God
+Jersey
+Orleans
+Victoria
+Phoenix
+Portland
+Charlotte
