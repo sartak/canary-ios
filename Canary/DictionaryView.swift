@@ -103,9 +103,9 @@ struct DictionaryView: View {
     private var syncFooter: some View {
         Group {
             if let last = DictionarySync.lastSync {
-                Text("Synced via iCloud when this app opens. Last sync \(last.formatted(.relative(presentation: .named))).")
+                Text("Synced via iCloud, usually within moments of a change. Last sync \(last.formatted(.relative(presentation: .named))).")
             } else {
-                Text("Syncs via iCloud when this app opens.")
+                Text("Syncs via iCloud automatically.")
             }
         }
     }
