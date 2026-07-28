@@ -35,6 +35,10 @@ private struct NextWordAlternatives {
 /// clock restarted at the moment of the real request, since lateness is
 /// measured against the user's ask, not speculation's head start.
 final class PredictionService {
+    // This whole instruction apparatus is an instruction-mediated stand-in
+    // for distribution access the framework doesn't expose; issue #4 tracks
+    // deleting it if Apple ships a native top-k API.
+    //
     // Apple's instruction house style (Foundation Models code-along): a
     // "Your job is..." role line and short imperative rules. NO example —
     // the 3B model parroted the example words verbatim as its answer for
