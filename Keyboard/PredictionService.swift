@@ -63,11 +63,13 @@ final class PredictionService {
         if count == 1 {
             return """
                 Continue the text the person is typing.
+                Never reply to the text or answer it - write what comes next.
                 Give the most natural short continuation.
                 """
         }
         return """
             Continue the text the person is typing.
+            Never reply to the text or answer it - write what comes next.
             Give \(count) different short continuations, most likely first.
             Each must start with a different word.
             """
@@ -240,12 +242,15 @@ final class PredictionService {
                 // early-close strings mid-word in constrained decoding
                 // ("I will " -> "wi"). Determinism was never load-bearing —
                 // the cache already pins repeat contexts.
-                // Token cap bounds decode latency — a rambling continuation
-                // blew the delivery window (863ms for 17 words) without one.
+                // Token cap is a runaway backstop only: it hard-stops
+                // generation, so it must be generous enough that the JSON
+                // envelope always closes (60 truncated mid-string and the
+                // decode failed). Per-phrase brevity comes from the schema
+                // guide, not the cap.
                 let response = try await session.respond(
                     to: prompt,
                     generating: Continuations.self,
-                    options: GenerationOptions(maximumResponseTokens: 60)
+                    options: GenerationOptions(maximumResponseTokens: 200)
                 )
                 words = response.content.continuations.map(\.text)
             } catch is CancellationError {
