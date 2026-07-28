@@ -278,6 +278,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
             let record = Self.baseRecord(recordType: "Shortcut", recordID: recordID, store: store)
             record.encryptedValues["trigger"] = state.trigger
             record.encryptedValues["phrase"] = state.phrase
+            record["opensURL"] = state.opensURL ? 1 : 0
             record["tombstoned"] = state.tombstoned ? 1 : 0
             record["updatedAt"] = state.updatedAt
             return record
@@ -322,6 +323,7 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
             let remote = DictionaryMerge.ShortcutState(
                 trigger: (record.encryptedValues["trigger"] as? String) ?? key,
                 phrase: (record.encryptedValues["phrase"] as? String) ?? "",
+                opensURL: ((record["opensURL"] as? Int) ?? 0) != 0,
                 tombstoned: ((record["tombstoned"] as? Int) ?? 0) != 0,
                 updatedAt: (record["updatedAt"] as? Date) ?? Date(timeIntervalSince1970: 0)
             )

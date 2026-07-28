@@ -15,6 +15,7 @@ struct ShortcutsView: View {
     @State private var showingAdd = false
     @State private var newTrigger = ""
     @State private var newPhrase = ""
+    @State private var newOpensURL = false
     @State private var addRejected = false
     /// Multi-select (trigger_lowers) while in edit mode, for bulk removal.
     @State private var selection = Set<String>()
@@ -36,7 +37,7 @@ struct ShortcutsView: View {
                             HStack {
                                 Text(shortcut.trigger)
                                     .fontWeight(.medium)
-                                Image(systemName: "arrow.right")
+                                Image(systemName: shortcut.opensURL ? "arrow.up.right.square" : "arrow.right")
                                     .foregroundStyle(.secondary)
                                     .imageScale(.small)
                                 Text(shortcut.phrase)
@@ -57,6 +58,7 @@ struct ShortcutsView: View {
                     Button {
                         newTrigger = ""
                         newPhrase = ""
+                        newOpensURL = false
                         addRejected = false
                         showingAdd = true
                     } label: {
@@ -72,15 +74,43 @@ struct ShortcutsView: View {
                 }
             }
         }
-        .alert("Add Shortcut", isPresented: $showingAdd) {
-            TextField("shortcut (e.g. omw)", text: $newTrigger)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("phrase (e.g. On my way!)", text: $newPhrase)
-            Button("Add") { add() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Typing the shortcut followed by a space expands it to the phrase.")
+        .sheet(isPresented: $showingAdd) {
+            // A sheet rather than an alert: the conditional open-as-URL
+            // toggle can't live in an alert.
+            NavigationStack {
+                Form {
+                    Section {
+                        TextField("shortcut (e.g. omw)", text: $newTrigger)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("phrase (e.g. On my way!)", text: $newPhrase)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } footer: {
+                        Text("Typing the shortcut followed by a space expands it to the phrase.")
+                    }
+                    if phraseLooksLikeURL {
+                        Section {
+                            Toggle("Open as URL when triggered", isOn: $newOpensURL)
+                        } footer: {
+                            Text("On: triggering jumps straight to this URL. Off: the URL is typed as text — for sending someone the link.")
+                        }
+                    }
+                }
+                .navigationTitle("Add Shortcut")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showingAdd = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Add") { add() }
+                            .disabled(newTrigger.trimmingCharacters(in: .whitespaces).isEmpty
+                                      || newPhrase.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
         .alert("Invalid shortcut", isPresented: $addRejected) {
             Button("OK", role: .cancel) {}
@@ -88,6 +118,17 @@ struct ShortcutsView: View {
             Text("Shortcuts are 2–24 letters, digits, or apostrophes with no spaces; phrases are a single line up to 200 characters.")
         }
         .onAppear(perform: reload)
+    }
+
+    /// Whether the phrase reads as a URL: it starts with a scheme, nothing
+    /// fuzzier ("v2.0" is not a URL). Any scheme counts — shortcuts:// and
+    /// friends are legitimate targets. Only gates showing the toggle.
+    private var phraseLooksLikeURL: Bool {
+        let phrase = newPhrase.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !phrase.contains(" "), let schemeEnd = phrase.range(of: "://") else { return false }
+        let scheme = phrase[..<schemeEnd.lowerBound]
+        guard let first = scheme.first, first.isLetter else { return false }
+        return scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == "." }
     }
 
     private var footerText: String {
@@ -133,7 +174,10 @@ struct ShortcutsView: View {
 
     private func add() {
         guard let store = DictionaryStore() else { return }
-        if store.addShortcut(trigger: newTrigger, phrase: newPhrase) {
+        // The toggle only applies when it was visible for this phrase.
+        let opensURL = newOpensURL && phraseLooksLikeURL
+        if store.addShortcut(trigger: newTrigger, phrase: newPhrase, opensURL: opensURL) {
+            showingAdd = false
             reload()
             DictionarySync.shared.kick()
         } else {

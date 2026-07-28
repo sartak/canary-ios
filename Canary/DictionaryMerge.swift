@@ -38,6 +38,8 @@ enum DictionaryMerge {
     struct ShortcutState: Equatable {
         var trigger: String     // stored casing
         var phrase: String
+        /// Whether triggering opens the phrase as a URL instead of typing it.
+        var opensURL: Bool = false
         var tombstoned: Bool
         var updatedAt: Date
     }
@@ -89,15 +91,21 @@ enum DictionaryMerge {
             return only
         case (let l?, let r?):
             var result = l
-            // phrase (and trigger casing): newer wins; tie → smaller phrase.
+            // phrase (and trigger casing, and the opens-URL flag, which is an
+            // attribute of the phrase): newer wins; tie → smaller phrase;
+            // full tie → the flag ORs (feature-on wins, deterministically).
             if l.updatedAt != r.updatedAt {
                 let newer = l.updatedAt > r.updatedAt ? l : r
                 result.trigger = newer.trigger
                 result.phrase = newer.phrase
+                result.opensURL = newer.opensURL
             } else if l.phrase != r.phrase {
                 let winner = l.phrase < r.phrase ? l : r
                 result.trigger = winner.trigger
                 result.phrase = winner.phrase
+                result.opensURL = winner.opensURL
+            } else {
+                result.opensURL = l.opensURL || r.opensURL
             }
             // tombstone tri-state, same rule as words.
             if l.updatedAt != r.updatedAt {

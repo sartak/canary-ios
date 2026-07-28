@@ -102,9 +102,10 @@ final class UsageStore {
     /// Un-learn tombstones (dictionary UI removals), lazily loaded like the
     /// learned cache. A tombstoned word cannot re-promote by usage count.
     private var unlearned: Set<String>?
-    /// Custom trigger→phrase shortcuts keyed by lowercased trigger, lazily
-    /// loaded from the shortcuts table and kept in sync by add/remove.
-    private var shortcutCache: [String: String]?
+    /// Custom shortcuts keyed by lowercased trigger (phrase + opens-URL
+    /// flag), lazily loaded from the shortcuts table and kept in sync by
+    /// add/remove.
+    private var shortcutCache: [String: (phrase: String, opensURL: Bool)]?
     /// iOS text-replacement pairs for this session (UILexicon entries whose
     /// sides differ), lowercased trigger → phrase. In-memory only.
     private var externalShortcuts: [String: String] = [:]
@@ -611,18 +612,20 @@ final class UsageStore {
 
     // MARK: - Shortcuts (Milestone 10)
 
-    /// Custom trigger→phrase map keyed by lowercased trigger.
-    func shortcuts() -> [String: String] {
+    /// Custom shortcuts keyed by lowercased trigger.
+    func shortcuts() -> [String: (phrase: String, opensURL: Bool)] {
         if let shortcutCache { return shortcutCache }
-        var result: [String: String] = [:]
+        var result: [String: (phrase: String, opensURL: Bool)] = [:]
         if let db = connection() {
             var stmt: OpaquePointer?
-            if sqlite3_prepare_v2(db, "SELECT trigger_lower, phrase FROM shortcuts WHERE deleted = 0", -1, &stmt, nil) == SQLITE_OK,
+            if sqlite3_prepare_v2(db, "SELECT trigger_lower, phrase, opens_url FROM shortcuts WHERE deleted = 0", -1, &stmt, nil) == SQLITE_OK,
                let statement = stmt {
                 while sqlite3_step(statement) == SQLITE_ROW {
                     if let triggerPtr = sqlite3_column_text(statement, 0),
                        let phrasePtr = sqlite3_column_text(statement, 1) {
-                        result[String(cString: triggerPtr)] = String(cString: phrasePtr)
+                        result[String(cString: triggerPtr)] =
+                            (phrase: String(cString: phrasePtr),
+                             opensURL: sqlite3_column_int64(statement, 2) != 0)
                     }
                 }
                 sqlite3_finalize(statement)
@@ -662,7 +665,7 @@ final class UsageStore {
             print("UsageStore: shortcut upsert failed")
             return
         }
-        shortcutCache?[lower] = cleanPhrase
+        shortcutCache?[lower] = (phrase: cleanPhrase, opensURL: false)
         print("UsageStore: shortcut '\(trigger)' -> '\(cleanPhrase)'")
     }
 
@@ -705,7 +708,13 @@ final class UsageStore {
     /// over iOS-provided pairs on trigger collision (the user defined them
     /// explicitly in our app; the iOS pair still exists system-wide).
     func shortcutPhrase(for triggerLower: String) -> String? {
-        shortcuts()[triggerLower] ?? externalShortcuts[triggerLower]
+        shortcuts()[triggerLower]?.phrase ?? externalShortcuts[triggerLower]
+    }
+
+    /// Whether triggering this shortcut opens its phrase as a URL instead of
+    /// typing it. iOS-provided pairs never open.
+    func shortcutOpensURL(for triggerLower: String) -> Bool {
+        shortcuts()[triggerLower]?.opensURL ?? false
     }
 
     /// Every known trigger token (custom + this session's iOS pairs), for the
@@ -811,13 +820,17 @@ final class UsageStore {
         // fsync each commit (a crash can lose the last moments of stats; the
         // learning data tolerates the same and always has).
         exec(opened, "PRAGMA synchronous=NORMAL;")
-        // Pre-release databases (any stamp but '1') recreate the stats event
-        // tables instead of carrying migrations into v1 — they hold only
-        // opt-in data. Everything else was always additive CREATEs.
-        if metaVersion(opened) != "1" {
+        // Pre-release databases (any stamp before v1) recreate the stats
+        // event tables — they hold only opt-in data. v1 → v2 adds the
+        // shortcut opens-URL column.
+        let version = metaVersion(opened)
+        if version != "1" && version != "2" {
             for table in ["key_events", "word_events", "swipe_events", "prediction_events"] {
                 exec(opened, "DROP TABLE IF EXISTS \(table);")
             }
+        }
+        if version == "1" {
+            exec(opened, "ALTER TABLE shortcuts ADD COLUMN opens_url INTEGER NOT NULL DEFAULT 0;")
         }
         exec(opened, Self.schemaSQL)
         let cutoff = Date().timeIntervalSince1970 - Self.eventRetentionDays * 86_400
@@ -886,7 +899,8 @@ final class UsageStore {
             phrase TEXT NOT NULL,
             created_at REAL NOT NULL,
             dirty INTEGER NOT NULL DEFAULT 1,
-            deleted INTEGER NOT NULL DEFAULT 0
+            deleted INTEGER NOT NULL DEFAULT 0,
+            opens_url INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS sync_state (
             key TEXT PRIMARY KEY,
@@ -939,7 +953,7 @@ final class UsageStore {
         ) WITHOUT ROWID;
         -- v1 is the honest first release schema; pre-release dev stamps get
         -- their stats tables recreated at open instead of migrations.
-        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1');
+        INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2');
         """
 
     // MARK: - Helpers

@@ -105,16 +105,24 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         // word via autocorrectWordDisabled, which this guard respects.
         suggestionService.onShortcutDetected = { [weak self] expansion in
             guard let self = self, !self.autocorrectWordDisabled else { return }
-            var actions: [InputAction] = Array(repeating: .deleteBackward, count: expansion.trigger.count + 1)
-            actions.append(.insert(expansion.phrase + String(expansion.boundary)))
-            if expansion.boundary == " " {
-                actions.append(.maybePunctuating(true))
+            if expansion.opensURL {
+                // URL shortcut: the trigger (and its boundary) disappear and
+                // the phrase opens instead of typing - a deliberate context
+                // switch out of the host app.
+                self.executeActions(Array(repeating: .deleteBackward, count: expansion.trigger.count + 1))
+                self.openShortcutURL(expansion.phrase)
+            } else {
+                var actions: [InputAction] = Array(repeating: .deleteBackward, count: expansion.trigger.count + 1)
+                actions.append(.insert(expansion.phrase + String(expansion.boundary)))
+                if expansion.boundary == " " {
+                    actions.append(.maybePunctuating(true))
+                }
+                self.executeActions(actions)
+                // The phrase may end a sentence ("On my way!") where the
+                // literal trigger didn't: re-derive shift from the expanded
+                // text, exactly as if it had been typed by hand.
+                self.autoShift()
             }
-            self.executeActions(actions)
-            // The phrase may end a sentence ("On my way!") where the literal
-            // trigger didn't: re-derive shift from the expanded text, exactly
-            // as if it had been typed by hand.
-            self.autoShift()
             self.usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: expansion.trigger, resolved: expansion.phrase)
         }
 
@@ -895,6 +903,29 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
     /// Discards the stashed swipe context. Called eagerly whenever the text
     /// context changes for a reason other than a swipe-replacement tap, so a
     /// stale swipe is never mislogged as a correction.
+    /// Opens a URL-shortcut's phrase. Keyboards can't call
+    /// UIApplication.shared.open (NS_EXTENSION_UNAVAILABLE is a compile-time
+    /// fence), so this walks the responder chain and invokes the classic
+    /// openURL: selector dynamically — the long-standing extension
+    /// workaround. The phrase is used as-is: the app only sets the flag on
+    /// schemed phrases, and a malformed one just fails to open.
+    private func openShortcutURL(_ phrase: String) {
+        guard let url = URL(string: phrase.trimmingCharacters(in: .whitespaces)) else {
+            print("KeyboardViewController: shortcut phrase is not a URL: \(phrase)")
+            return
+        }
+        let selector = sel_registerName("openURL:")
+        var responder: UIResponder? = self
+        while let current = responder {
+            if current.responds(to: selector) {
+                current.perform(selector, with: url)
+                return
+            }
+            responder = current.next
+        }
+        print("KeyboardViewController: no responder handles openURL:")
+    }
+
     private func clearPendingSwipeContext() {
         pendingSwipeContext = nil
         swipeInferenceTimer?.invalidate()
@@ -977,14 +1008,19 @@ class KeyboardViewController: UIInputViewController, KeyActionDelegate, EditingB
         if !autocorrectWordDisabled,
            let phrase = usageStore?.shortcutPhrase(for: result.word.lowercased()) {
             usageStore?.recordSwipeCommit()
-            var actions: [InputAction] = Array(repeating: .deleteBackward, count: result.word.count + 1)
-            actions.append(.insert(phrase + " "))
-            actions.append(.maybePunctuating(true))
-            executeActions(actions)
-            // Re-derive shift from the expanded text (the autoShift above ran
-            // against the literal trigger): a phrase ending a sentence shifts
-            // the next letter, as if typed by hand.
-            autoShift()
+            if usageStore?.shortcutOpensURL(for: result.word.lowercased()) == true {
+                executeActions(Array(repeating: .deleteBackward, count: result.word.count + 1))
+                openShortcutURL(phrase)
+            } else {
+                var actions: [InputAction] = Array(repeating: .deleteBackward, count: result.word.count + 1)
+                actions.append(.insert(phrase + " "))
+                actions.append(.maybePunctuating(true))
+                executeActions(actions)
+                // Re-derive shift from the expanded text (the autoShift above
+                // ran against the literal trigger): a phrase ending a sentence
+                // shifts the next letter, as if typed by hand.
+                autoShift()
+            }
             usageStore?.recordTapEvent(kind: .shortcutExpanded, typed: result.word, resolved: phrase)
             refreshSuggestions()
             return

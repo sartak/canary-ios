@@ -60,6 +60,8 @@ class SuggestionService {
         /// The character that completed the trigger; re-inserted after the
         /// phrase by the expansion.
         let boundary: Character
+        /// Open the phrase as a URL instead of typing it.
+        let opensURL: Bool
     }
     /// Fired when the token just completed by a boundary keypress is a known
     /// shortcut trigger. Detection only reports; the controller decides and
@@ -977,7 +979,9 @@ class SuggestionService {
               let (token, boundary) = Self.lastCompletedToken(in: before),
               let phrase = usageStore?.shortcutPhrase(for: token.lowercased()) else { return }
         print("SuggestionService: shortcut '\(token)' detected (boundary '\(boundary)')")
-        onShortcutDetected?(PendingShortcutExpansion(trigger: token, phrase: phrase, boundary: boundary))
+        onShortcutDetected?(PendingShortcutExpansion(
+            trigger: token, phrase: phrase, boundary: boundary,
+            opensURL: usageStore?.shortcutOpensURL(for: token.lowercased()) ?? false))
     }
 
     /// The token immediately before EXACTLY ONE trailing boundary character.

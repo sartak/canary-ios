@@ -155,6 +155,8 @@ final class DictionaryStore {
         let trigger: String
         let triggerLower: String
         let phrase: String
+        /// Triggering opens the phrase as a URL instead of typing it.
+        let opensURL: Bool
         var id: String { triggerLower }
     }
 
@@ -163,7 +165,7 @@ final class DictionaryStore {
     /// Settings and only mirrored per keyboard session.
     func shortcuts() -> [Shortcut] {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT trigger, trigger_lower, phrase FROM shortcuts WHERE deleted = 0 ORDER BY trigger_lower ASC", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT trigger, trigger_lower, phrase, opens_url FROM shortcuts WHERE deleted = 0 ORDER BY trigger_lower ASC", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else {
             return []
         }
@@ -177,7 +179,8 @@ final class DictionaryStore {
             result.append(Shortcut(
                 trigger: String(cString: triggerPtr),
                 triggerLower: String(cString: lowerPtr),
-                phrase: String(cString: phrasePtr)
+                phrase: String(cString: phrasePtr),
+                opensURL: sqlite3_column_int64(statement, 3) != 0
             ))
         }
         return result
@@ -189,7 +192,7 @@ final class DictionaryStore {
     /// apostrophes with at least one letter and no whitespace; phrase trimmed,
     /// single-line, 1–200 chars, not equal to the trigger.
     @discardableResult
-    func addShortcut(trigger: String, phrase: String) -> Bool {
+    func addShortcut(trigger: String, phrase: String, opensURL: Bool = false) -> Bool {
         let trimmedTrigger = trigger.trimmingCharacters(in: .whitespaces)
         let trimmedPhrase = phrase.trimmingCharacters(in: .whitespaces)
         guard Self.isValidShortcutTrigger(trimmedTrigger),
@@ -197,12 +200,14 @@ final class DictionaryStore {
               !trimmedPhrase.contains(where: \.isNewline),
               trimmedTrigger.lowercased() != trimmedPhrase.lowercased() else { return false }
         run("""
-            INSERT INTO shortcuts (trigger_lower, trigger, phrase, created_at) VALUES (?, ?, ?, ?)
+            INSERT INTO shortcuts (trigger_lower, trigger, phrase, created_at, opens_url) VALUES (?1, ?2, ?3, ?5, ?4)
             ON CONFLICT(trigger_lower) DO UPDATE SET
                 trigger = excluded.trigger, phrase = excluded.phrase,
-                created_at = excluded.created_at, dirty = 1, deleted = 0
+                created_at = excluded.created_at, opens_url = excluded.opens_url,
+                dirty = 1, deleted = 0
             """,
             texts: [trimmedTrigger.lowercased(), trimmedTrigger, trimmedPhrase],
+            ints: [opensURL ? 1 : 0],
             doubles: [Date().timeIntervalSince1970])
         return true
     }
@@ -632,7 +637,7 @@ final class DictionaryStore {
     /// Shortcut row in merge-rule shape (created_at doubles as updatedAt).
     func shortcutState(for triggerLower: String) -> DictionaryMerge.ShortcutState? {
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT trigger, phrase, created_at, deleted FROM shortcuts WHERE trigger_lower = ?", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT trigger, phrase, created_at, deleted, opens_url FROM shortcuts WHERE trigger_lower = ?", -1, &stmt, nil) == SQLITE_OK,
               let statement = stmt else { return nil }
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, triggerLower, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
@@ -642,6 +647,7 @@ final class DictionaryStore {
         return DictionaryMerge.ShortcutState(
             trigger: String(cString: triggerPtr),
             phrase: String(cString: phrasePtr),
+            opensURL: sqlite3_column_int64(statement, 4) != 0,
             tombstoned: sqlite3_column_int64(statement, 3) != 0,
             updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
         )
@@ -650,7 +656,8 @@ final class DictionaryStore {
     func applyShortcutState(_ state: DictionaryMerge.ShortcutState, for triggerLower: String, markDirty: Bool) {
         let dirty = markDirty ? 1 : 0
         let deleted = state.tombstoned ? 1 : 0
-        run("INSERT OR REPLACE INTO shortcuts (trigger_lower, trigger, phrase, created_at, dirty, deleted) VALUES (?1, ?2, ?3, ?4, \(dirty), \(deleted))",
+        let opensURL = state.opensURL ? 1 : 0
+        run("INSERT OR REPLACE INTO shortcuts (trigger_lower, trigger, phrase, created_at, dirty, deleted, opens_url) VALUES (?1, ?2, ?3, ?4, \(dirty), \(deleted), \(opensURL))",
             texts: [triggerLower, state.trigger, state.phrase],
             doubles: [state.updatedAt.timeIntervalSince1970])
     }
