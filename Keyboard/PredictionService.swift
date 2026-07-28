@@ -11,11 +11,22 @@ import FoundationModels
 #endif
 
 #if canImport(FoundationModels)
+// Each continuation is a nested object, not a bare string: flat [String]
+// proved fatally ambiguous to the model in both directions (a word list
+// became one sentence; one sentence became a word-per-element list). An
+// object with a text field can't degenerate either way.
+@available(iOS 26.0, *)
+@Generable
+private struct Continuation {
+    @Guide(description: "One possible continuation of the text: just the next few words, as a single phrase")
+    var text: String
+}
+
 @available(iOS 26.0, *)
 @Generable
 private struct Continuations {
-    @Guide(description: "Different short ways the text could continue, a few words each. Each continuation begins with a different word. Most likely first; exactly as many as the instructions request.")
-    var continuations: [String]
+    @Guide(description: "The different continuations, most likely first. Each starts with a different word; exactly as many as the instructions request.")
+    var continuations: [Continuation]
 }
 #endif
 
@@ -229,11 +240,14 @@ final class PredictionService {
                 // early-close strings mid-word in constrained decoding
                 // ("I will " -> "wi"). Determinism was never load-bearing —
                 // the cache already pins repeat contexts.
+                // Token cap bounds decode latency — a rambling continuation
+                // blew the delivery window (863ms for 17 words) without one.
                 let response = try await session.respond(
                     to: prompt,
-                    generating: Continuations.self
+                    generating: Continuations.self,
+                    options: GenerationOptions(maximumResponseTokens: 60)
                 )
-                words = response.content.continuations
+                words = response.content.continuations.map(\.text)
             } catch is CancellationError {
                 // Superseded: the session survives (its transcript didn't
                 // advance); the isResponding guard covers the unwind race.
