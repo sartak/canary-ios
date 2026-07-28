@@ -110,10 +110,6 @@ enum KeyboardSettings {
 /// dials — deliberately unsynced experiment knobs, not preferences — and fall
 /// back to the baked defaults. Report the keepers and they get locked in.
 enum PredictionTuning {
-    /// Results delivered later than this after they were asked for are
-    /// cached but not shown; they surface at the next natural refresh.
-    static var deliveryWindow: TimeInterval { tuned("deliveryWindow", 0.5) }
-
     /// After a swipe commits, how long until inference starts for the
     /// correction-to-prediction handoff (the model's head start).
     static var swipeInferenceDelay: TimeInterval { tuned("swipeInferenceDelay", 0.5) }
@@ -136,7 +132,6 @@ enum PredictionTuning {
         ("tapInferenceDelay", "Tap inference delay", 0.35),
         ("swipeInferenceDelay", "Swipe inference delay", 0.5),
         ("swipeHandoffDelay", "Swipe handoff delay", 1.0),
-        ("deliveryWindow", "Delivery window", 0.5),
     ]
 
     static func override(_ key: String) -> TimeInterval? {

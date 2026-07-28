@@ -100,10 +100,8 @@ final class PredictionService {
     /// The context the in-flight generation is answering, nil when idle.
     private var inflightContext: String?
     private var inflightTask: Task<Void, Never>?
-    /// Delivery for the in-flight generation (nil for pure prefetches), plus
-    /// when it was asked for — the freshness clock.
+    /// Delivery for the in-flight generation (nil for pure prefetches).
     private var pendingCompletion: (([String]) -> Void)?
-    private var deliveryRequestedAt: CFAbsoluteTime = 0
 
     /// Telemetry hook, fired once per completed model serve (delivered,
     /// cached-late, or speculative) with latency in ms and word count.
@@ -198,9 +196,8 @@ final class PredictionService {
         }
         if key == inflightContext {
             // The speculative prefetch guessed right: ride its generation
-            // instead of restarting it, clock reset to this real ask.
+            // instead of restarting it.
             pendingCompletion = completion
-            deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
             return
         }
         start(context: context, count: count, completion: completion)
@@ -225,7 +222,6 @@ final class PredictionService {
         let key = Self.cacheKey(context, count)
         inflightContext = key
         pendingCompletion = completion
-        deliveryRequestedAt = CFAbsoluteTimeGetCurrent()
 
         let session = session(count: count)
         inflightTask = Task { @MainActor [weak self] in
@@ -296,16 +292,15 @@ final class PredictionService {
             self.store(cleaned, for: key)
 
             let completion = self.pendingCompletion
-            let waited = CFAbsoluteTimeGetCurrent() - self.deliveryRequestedAt
             self.inflightContext = nil
             self.inflightTask = nil
             self.pendingCompletion = nil
 
-            // Late results never repaint the bar mid-gaze; the cache above
-            // surfaces them synchronously at the next refresh instead.
-            if let completion, waited <= PredictionTuning.deliveryWindow {
-                completion(cleaned)
-            }
+            // Delivered whenever ready: the bar stays EMPTY while a
+            // prediction is pending, so a late fill paints into blank space —
+            // there is no repaint hazard left to gate on. Staleness is still
+            // enforced by the token above and the caller's context checks.
+            completion?(cleaned)
         }
         #endif
     }
