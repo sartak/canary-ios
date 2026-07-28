@@ -13,9 +13,9 @@ import FoundationModels
 #if canImport(FoundationModels)
 @available(iOS 26.0, *)
 @Generable
-private struct NextWordAlternatives {
-    @Guide(description: "Different guesses for the same single next word - competing options for one position, never consecutive words of a phrase. Most likely guess first; exactly as many guesses as the instructions request.")
-    var alternatives: [String]
+private struct Continuations {
+    @Guide(description: "Different short ways the text could continue, a few words each. Each continuation begins with a different word. Most likely first; exactly as many as the instructions request.")
+    var continuations: [String]
 }
 #endif
 
@@ -39,35 +39,26 @@ final class PredictionService {
     // for distribution access the framework doesn't expose; issue #4 tracks
     // deleting it if Apple ships a native top-k API.
     //
-    // Apple's instruction house style (Foundation Models code-along): a
-    // "Your job is..." role line and short imperative rules. NO example —
-    // the 3B model parroted the example words verbatim as its answer for
-    // every input (logs: "What " -> minute, few, second), and the retained
-    // session then reinforced its own parroting from the transcript. If
-    // quality needs a demonstration, the right form is a seeded transcript
-    // turn, never example text in the instructions. Built per config so the
-    // model generates exactly as many guesses as the bar will show.
+    // CONTINUATION framing: chat models are natively good at continuing
+    // text and bad at enumerating token alternatives (the earlier framing —
+    // "N guesses for one word" — produced fragments and frequency spam).
+    // We ask for N short continuations, each starting differently, and take
+    // the first word of each; diversity across whole continuations is a
+    // shape the model can actually produce. NO example text: the 3B model
+    // parrots examples verbatim (a demonstration belongs in a seeded
+    // transcript turn if ever needed). Built per config so the model
+    // generates exactly as many continuations as the bar needs.
     private static func makeInstructions(count: Int) -> String {
         if count == 1 {
             return """
-                Your job is to predict the next word a person will type on their phone.
-                The prompt is the text they have typed so far. It may end mid-sentence.
-                Exactly one word comes next. Respond with your single best guess for
-                that word.
-
-                Never respond with a continuation of several words.
-                Never repeat the text back. One single word, no punctuation.
+                Continue the text the person is typing.
+                Give the most natural short continuation.
                 """
         }
         return """
-            Your job is to predict the next word a person will type on their phone.
-            The prompt is the text they have typed so far. It may end mid-sentence.
-            Exactly one word comes next. Respond with \(count) different guesses for
-            that one word, most likely first.
-
-            Every guess is a competing option for the same single position.
-            Never respond with consecutive words of one sentence.
-            Never repeat the text back. Single words only, no punctuation.
+            Continue the text the person is typing.
+            Give \(count) different short continuations, most likely first.
+            Each must start with a different word.
             """
     }
 
@@ -240,9 +231,9 @@ final class PredictionService {
                 // the cache already pins repeat contexts.
                 let response = try await session.respond(
                     to: prompt,
-                    generating: NextWordAlternatives.self
+                    generating: Continuations.self
                 )
-                words = response.content.alternatives
+                words = response.content.continuations
             } catch is CancellationError {
                 // Superseded: the session survives (its transcript didn't
                 // advance); the isResponding guard covers the unwind race.
@@ -260,11 +251,19 @@ final class PredictionService {
             // Raw, pre-filter emission — the ground truth for decoding
             // pathologies (fragments, early string-closes, junk elements)
             // that the cleaned log line below would mask.
-            print("PredictionService: raw response: \(words)")
+            print("PredictionService: raw continuations: \(words)")
 
+            // The prediction is the FIRST WORD of each continuation, stripped
+            // of surrounding punctuation, deduped across continuations.
             var seen = Set<String>()
+            let wordCharacters = CharacterSet.letters.union(CharacterSet(charactersIn: "'"))
             let cleaned = words
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .compactMap { continuation -> String? in
+                    guard let first = continuation
+                        .split(whereSeparator: { $0.isWhitespace })
+                        .first else { return nil }
+                    return String(first).trimmingCharacters(in: wordCharacters.inverted)
+                }
                 .filter { word in
                     guard !word.isEmpty, word.count <= 24,
                           word.allSatisfy({ $0.isLetter || $0 == "'" }),
