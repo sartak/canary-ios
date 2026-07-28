@@ -38,7 +38,8 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
                                         ownerName: CKCurrentUserDefaultName)
     private static let wordPrefix = "word:"
     private static let shortcutPrefix = "shortcut:"
-    private static let lastSyncKey = "lastDictionarySync"
+    private static let lastSendKey = "lastDictionarySend"
+    private static let lastReceiveKey = "lastDictionaryReceive"
 
     private var engine: CKSyncEngine?
 
@@ -95,9 +96,47 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
         }
     }
 
-    /// When the app last completed a send, for the UI footer.
+    /// When a send pass last completed (engine's didSendChanges).
+    static var lastSend: Date? {
+        UserDefaults.standard.object(forKey: lastSendKey) as? Date
+    }
+
+    /// When a fetch pass last completed (engine's didFetchChanges).
+    static var lastReceive: Date? {
+        UserDefaults.standard.object(forKey: lastReceiveKey) as? Date
+    }
+
+    /// Most recent activity in either direction, for the dictionary footer.
     static var lastSync: Date? {
-        UserDefaults.standard.object(forKey: lastSyncKey) as? Date
+        switch (lastSend, lastReceive) {
+        case (nil, nil): nil
+        case (let send?, nil): send
+        case (nil, let receive?): receive
+        case (let send?, let receive?): max(send, receive)
+        }
+    }
+
+    /// Manual send: queue everything dirty and push. The engine still owns
+    /// scheduling niceties; this just asks it to go now.
+    func sendNow() {
+        guard let store = DictionaryStore() else { return }
+        let engine = ensureEngine(store: store)
+        engine.state.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: Self.zoneID))])
+        engine.state.add(pendingRecordZoneChanges:
+            store.dirtyWordKeys().map { .saveRecord(Self.wordRecordID($0)) }
+            + store.dirtyShortcutKeys().map { .saveRecord(Self.shortcutRecordID($0)) })
+        Task {
+            try? await engine.sendChanges()
+        }
+    }
+
+    /// Manual receive: fetch whatever other devices have pushed.
+    func receiveNow() {
+        guard let store = DictionaryStore() else { return }
+        let engine = ensureEngine(store: store)
+        Task {
+            try? await engine.fetchChanges()
+        }
     }
 
     private func ensureEngine(store: DictionaryStore) -> CKSyncEngine {
@@ -173,8 +212,6 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
                     break
                 }
             }
-            UserDefaults.standard.set(Date(), forKey: Self.lastSyncKey)
-
         case .fetchedDatabaseChanges(let changes):
             // Zone deleted remotely (user reset iCloud, etc.): never delete
             // local data in response to remote absence — re-create and
@@ -184,6 +221,12 @@ final class DictionarySync: NSObject, CKSyncEngineDelegate {
                 DictionaryStore()?.purgeSystemFields()
                 markEverythingDirty()
             }
+
+        case .didSendChanges:
+            UserDefaults.standard.set(Date(), forKey: Self.lastSendKey)
+
+        case .didFetchChanges:
+            UserDefaults.standard.set(Date(), forKey: Self.lastReceiveKey)
 
         default:
             break

@@ -22,6 +22,11 @@ struct SettingsView: View {
     @State private var timings: [String: TimeInterval] = [:]
     @State private var confirmingReset = false
     @State private var resetDone = false
+    @State private var lastSend = DictionarySync.lastSend
+    @State private var lastReceive = DictionarySync.lastReceive
+    /// Refreshes the sync timestamps while the screen is visible, since
+    /// sends and fetches complete asynchronously after a button tap.
+    private let syncClock = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         List {
@@ -65,6 +70,35 @@ struct SettingsView: View {
                 Text("Keyboard")
             } footer: {
                 Text("The first three toggles mirror the keyboard's number-layer keys; the keyboard adopts changes the next time it appears. AI Suggestions is how many next words from Apple's on-device model fill the empty suggestion bar (0 turns them off; Apple Intelligence devices only; nothing leaves the phone).")
+            }
+
+            Section {
+                Button {
+                    DictionarySync.shared.sendNow()
+                } label: {
+                    HStack {
+                        Text("Send Now")
+                        Spacer()
+                        Text(syncStamp(lastSend))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button {
+                    DictionarySync.shared.receiveNow()
+                } label: {
+                    HStack {
+                        Text("Receive Now")
+                        Spacer()
+                        Text(syncStamp(lastReceive))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } header: {
+                Text("iCloud Sync")
+            } footer: {
+                Text("Sync also runs automatically: on app open, after edits, on pushes from other devices, and via background refresh. These run one direction on demand and show when each last completed.")
             }
 
             Section {
@@ -134,6 +168,10 @@ struct SettingsView: View {
             Button("OK", role: .cancel) {}
         }
         .onAppear(perform: refreshSettings)
+        .onReceive(syncClock) { _ in
+            lastSend = DictionarySync.lastSend
+            lastReceive = DictionarySync.lastReceive
+        }
         // onAppear fires on navigation push, NOT when the app returns from
         // background — which is exactly when the keyboard (used in some other
         // app) flipped a toggle. Re-read on activation too.
@@ -146,12 +184,19 @@ struct SettingsView: View {
 
     /// The keyboard (or another device via SettingsSync) may have flipped
     /// these since the view last read them.
+    private func syncStamp(_ date: Date?) -> String {
+        guard let date else { return "never" }
+        return date.formatted(.relative(presentation: .named))
+    }
+
     private func refreshSettings() {
         swipeOnly = KeyboardSettings.swipeOnlyMode
         autocorrect = !KeyboardSettings.autocorrectUserDisabled
         debugVisualization = KeyboardSettings.debugVisualizationEnabled
         collectStats = KeyboardSettings.statsCollectionEnabled
         predictionCount = KeyboardSettings.predictionWordCount
+        lastSend = DictionarySync.lastSend
+        lastReceive = DictionarySync.lastReceive
         refreshTimings()
     }
 
