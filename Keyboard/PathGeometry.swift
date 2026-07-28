@@ -435,4 +435,62 @@ enum PathGeometry {
         let dy = b.y - a.y
         return (dx * dx + dy * dy).squareRoot()
     }
+
+    /// Banded dynamic-time-warping distance between two point sequences:
+    /// mean per-step distance along the optimal monotonic elastic alignment,
+    /// with |i − j| ≤ band (Sakoe-Chiba). Where pointwise comparison is
+    /// index-rigid — one wobbly segment throws every later point off-phase —
+    /// DTW lets a detour align to its corresponding template region and the
+    /// rest of the path snap back into phase. O(N·band).
+    static func dtwMeanDistance(_ a: [CGPoint], _ b: [CGPoint], band: Int) -> CGFloat {
+        dtwCost(a, b, band: band, weights: nil) / CGFloat(max(a.count, b.count, 1))
+    }
+
+    /// Weighted variant for the location channel: each step's distance is
+    /// scaled by the FIRST sequence's (user's) endpoint weight. Weights sum
+    /// to 1, matching weightedPointwiseDistance's scale; a user index the
+    /// warp revisits counts its weight again — a small, deliberate
+    /// approximation.
+    static func dtwWeightedDistance(_ a: [CGPoint], _ b: [CGPoint],
+                                    weights: [CGFloat], band: Int) -> CGFloat {
+        dtwCost(a, b, band: band, weights: weights)
+    }
+
+    private static func dtwCost(_ a: [CGPoint], _ b: [CGPoint],
+                                band: Int, weights: [CGFloat]?) -> CGFloat {
+        let n = a.count
+        let m = b.count
+        guard n > 0, m > 0 else { return 0 }
+        let unreachable = CGFloat.greatestFiniteMagnitude
+        var previous = [CGFloat](repeating: unreachable, count: m + 1)
+        var current = previous
+        previous[0] = 0
+        for i in 1...n {
+            for j in 0...m {
+                current[j] = unreachable
+            }
+            let low = max(1, i - band)
+            let high = min(m, i + band)
+            guard low <= high else {
+                swap(&previous, &current)
+                continue
+            }
+            for j in low...high {
+                let stepBest = min(previous[j], current[j - 1], previous[j - 1])
+                guard stepBest < unreachable else { continue }
+                let dx = a[i - 1].x - b[j - 1].x
+                let dy = a[i - 1].y - b[j - 1].y
+                var cost = (dx * dx + dy * dy).squareRoot()
+                if let weights {
+                    cost *= weights[i - 1]
+                }
+                current[j] = stepBest + cost
+            }
+            swap(&previous, &current)
+        }
+        let total = previous[m]
+        // Unreachable only if the band is narrower than |n − m|; rank it
+        // maximally distant rather than poisoning the math with infinity.
+        return total < unreachable ? total : 1_000
+    }
 }

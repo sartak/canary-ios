@@ -195,7 +195,16 @@ final class SwipeDecoder {
                       loopEvents: [(character: Character, arcFraction: CGFloat)],
                       limit: Int,
                       live: Bool) -> (ranked: [SwipeCandidate], skipped: Int) {
-        var scored: [SwipeCandidate] = []
+        // Pass-1 winners carry what the DTW rescore needs alongside the
+        // pointwise candidate.
+        struct Finalist {
+            var candidate: SwipeCandidate
+            let templatePoints: [CGPoint]
+            let templateNormalized: [CGPoint]
+            let logPrior: Double
+        }
+
+        var scored: [Finalist] = []
         scored.reserveCapacity(entries.count)
         var skipped = 0
 
@@ -221,7 +230,7 @@ final class SwipeDecoder {
             // through-the-apostrophe); the word scores as its best variant, so
             // a deliberate detour through ' matches the explicit template and
             // beats the plain-word twin.
-            var best: SwipeCandidate?
+            var best: Finalist?
             for template in templates {
                 // Length pruning. Live keeps long templates (the user may still
                 // be mid-word) and drops only those already too short to match.
@@ -279,10 +288,14 @@ final class SwipeDecoder {
                     + SwipeTuning.lmWeight * logPrior
                     + loopBonus
 
-                if best == nil || logScore > best!.logScore {
-                    best = SwipeCandidate(word: entry.word, logScore: logScore,
-                                          shapeDistance: xs, locationDistance: xl,
-                                          loopBonus: loopBonus)
+                if best == nil || logScore > best!.candidate.logScore {
+                    best = Finalist(
+                        candidate: SwipeCandidate(word: entry.word, logScore: logScore,
+                                                  shapeDistance: xs, locationDistance: xl,
+                                                  loopBonus: loopBonus),
+                        templatePoints: templatePoints,
+                        templateNormalized: templateNormalized,
+                        logPrior: logPrior)
                 }
             }
 
@@ -293,19 +306,55 @@ final class SwipeDecoder {
             }
         }
 
-        // sorted(by:) is not guaranteed stable, and exact score ties are real:
-        // a swipe that skips the apostrophe scores "can't" (letter-only
-        // variant) and "cant" identically — same path, same corpus count (the
-        // count source strips apostrophes). Ties break toward the lexicon's
-        // rank order, which the query already sorted by — rank knows "can't"
-        // outranks "cant" even when the counts agree.
-        let ranked = Array(scored.enumerated()
+        // Pass 1 order: the cheap pointwise scores select the finalists.
+        // sorted(by:) is not guaranteed stable, and exact score ties are real
+        // ("can't" letter-only vs "cant": same path, same corpus count); ties
+        // break toward the lexicon's rank order via the index.
+        var ordered = scored.enumerated()
             .sorted {
-                $0.element.logScore != $1.element.logScore
-                    ? $0.element.logScore > $1.element.logScore
+                $0.element.candidate.logScore != $1.element.candidate.logScore
+                    ? $0.element.candidate.logScore > $1.element.candidate.logScore
                     : $0.offset < $1.offset
             }
             .map(\.element)
+
+        // Pass 2: banded-DTW rescore of the finalists. Pointwise comparison
+        // is index-rigid — one wobbly or corner-cut segment throws every
+        // later point off-phase and poisons the tail of the comparison — so
+        // the finalists are rescored with an elastic alignment (band-limited;
+        // see SwipeTuning.dtwBand) in both channels. Only they pay the
+        // O(N·band) cost, and since dtwRescoreCount comfortably exceeds
+        // `limit`, the returned prefix always comes from the rescored,
+        // mutually comparable set.
+        let rescoreCount = min(SwipeTuning.dtwRescoreCount, ordered.count)
+        for index in 0..<rescoreCount {
+            let finalist = ordered[index]
+            let xs = PathGeometry.dtwMeanDistance(userNormalized, finalist.templateNormalized,
+                                                  band: SwipeTuning.dtwBand)
+            let xl = PathGeometry.dtwWeightedDistance(userResampled, finalist.templatePoints,
+                                                      weights: weights,
+                                                      band: SwipeTuning.dtwBand) / keyPitch
+            let loopBonus = finalist.candidate.loopBonus
+            let logScore = -Double(xs * xs) / (2 * Self.sigmaShapeSq)
+                - Double(xl * xl) / (2 * Self.sigmaLocationSq)
+                + SwipeTuning.lmWeight * finalist.logPrior
+                + loopBonus
+            ordered[index].candidate = SwipeCandidate(word: finalist.candidate.word,
+                                                      logScore: logScore,
+                                                      shapeDistance: xs,
+                                                      locationDistance: xl,
+                                                      loopBonus: loopBonus)
+        }
+
+        // Final order among the rescored finalists, same tie-break (identical
+        // templates stay identical under DTW, so can't/cant still ties).
+        let ranked = Array(ordered.prefix(rescoreCount).enumerated()
+            .sorted {
+                $0.element.candidate.logScore != $1.element.candidate.logScore
+                    ? $0.element.candidate.logScore > $1.element.candidate.logScore
+                    : $0.offset < $1.offset
+            }
+            .map(\.element.candidate)
             .prefix(limit))
         return (ranked, skipped)
     }

@@ -100,4 +100,15 @@ enum SwipeTuning {
     /// lexical travel between distinct letters (adjacent keys are >= 1 pitch
     /// apart), not a wiggle on a single key.
     static let wiggleMaxLeg: CGFloat = 0.65
+
+    /// Finalists rescored with banded DTW after the cheap pointwise pass.
+    /// Comfortably above the bar's needs (limit is 10) so the returned
+    /// prefix always comes from the rescored, comparable set.
+    static let dtwRescoreCount = 20
+
+    /// Sakoe-Chiba band half-width for the DTW rescore, in resampled points
+    /// (of resampleCount): alignment may flex up to ±band indices, enough to
+    /// absorb wobbles and cut corners while keeping degenerate warps (one
+    /// word's shape smeared onto a much longer word's) impossible.
+    static let dtwBand = 8
 }
