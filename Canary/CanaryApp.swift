@@ -5,6 +5,7 @@
 //  Created by Shawn Moore on 7/29/25.
 //
 
+import BackgroundTasks
 import SwiftUI
 import UIKit
 
@@ -18,10 +19,55 @@ import UIKit
 /// reliable fallback. The keyboard still can't receive pushes; it picks up
 /// synced data at its next appearance via cache invalidation.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    /// Must appear in Info.plist's BGTaskSchedulerPermittedIdentifiers.
+    static let refreshTaskID = "net.rpglanguage.Canary.sync"
+
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         application.registerForRemoteNotifications()
+        // Scheduled background refresh closes the send-side gap: the
+        // keyboard only marks rows dirty, so keyboard-made changes need app
+        // runtime to upload. iOS grants these opportunistically (typically a
+        // few times a day); pushes remain the receive path and foreground
+        // kicks the reliable fallback.
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.refreshTaskID, using: nil) { task in
+            guard let refresh = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            Self.handleRefresh(refresh)
+        }
+        Self.scheduleRefresh()
         return true
+    }
+
+    /// Always re-armed (each request is one-shot). The earliest-begin date
+    /// is a request, not a promise - iOS decides the actual cadence.
+    static func scheduleRefresh() {
+        let request = BGAppRefreshTaskRequest(identifier: refreshTaskID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 4 * 3600)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+        } catch {
+            print("CanaryApp: background refresh scheduling failed: \(error)")
+        }
+    }
+
+    static func handleRefresh(_ task: BGAppRefreshTask) {
+        scheduleRefresh()
+        let work = Task { @MainActor in
+            DictionarySync.shared.kick()
+            SettingsSync.sync()
+            // kick() is fire-and-forget; hold the task open long enough for
+            // the engine's fetch+send round trips, then report done.
+            try? await Task.sleep(for: .seconds(15))
+            guard !Task.isCancelled else { return }
+            task.setTaskCompleted(success: true)
+        }
+        task.expirationHandler = {
+            work.cancel()
+            task.setTaskCompleted(success: false)
+        }
     }
 
     func application(_ application: UIApplication,
@@ -59,6 +105,8 @@ struct CanaryApp: App {
             if phase == .active {
                 DictionarySync.shared.kick()
                 SettingsSync.sync()
+            } else if phase == .background {
+                AppDelegate.scheduleRefresh()
             }
         }
     }
